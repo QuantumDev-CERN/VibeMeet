@@ -1,0 +1,2 @@
+// Search routes placeholder.
+export {};

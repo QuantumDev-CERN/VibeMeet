@@ -1,0 +1,2 @@
+// Community routes placeholder.
+export {};
