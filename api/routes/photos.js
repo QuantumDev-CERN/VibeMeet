@@ -1,0 +1,2 @@
+// Photo routes placeholder.
+export {};

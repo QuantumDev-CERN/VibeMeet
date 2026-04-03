@@ -1,0 +1,2 @@
+// Thread routes placeholder.
+export {};
