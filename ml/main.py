@@ -1,6 +1,6 @@
 """FastAPI application entrypoint placeholder."""
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.core import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List 
 import numpy as np 
 import cv2
@@ -14,9 +14,9 @@ app = FastAPI()
 #Only Node service calls this
 app.add_middleware(
     CORSMiddleware,
-    allow_origin=["https://localhost:3000"]
-    allow_methods=["*"]
-    allow_headers=["*"]
+    allow_origins=["https://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/health")
@@ -46,34 +46,34 @@ def process_photo(req: ProcessPhotoRequest):
 
 @app.post("/index-user")
 async def index_user(
-    user_id: str = Form(...)
-    selfies: List[UploadFile] = File(...)
+    user_id: str = Form(...),
+    selfies: List[UploadFile] = File(..., description="Upload 2-5 selfie images")
 ):
-"""
-    Called when user registers their face.
-    Accepts multiple selfie files as multipart form data.
-"""
-if len(selfies) < 2:
-    raise HTTPException(
-        status_code = 400,
-        detail = "Minimum 2 selfies required for reliable indexing"
-    )
+    """
+        Called when user registers their face.
+        Accepts multiple selfie files as multipart form data.
+    """
+    if len(selfies) < 2:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Minimum 2 selfies required for reliable indexing"
+        )
 
-images = []
-for selfie in selfies:
-    contents = await selfie.read()
-    img_array = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if img is not None:
-        images.append(img)
-    
-try:
-    embedding = build_user_embedding(images)
-    upsert_user_embedding(user_id, embedding.tolist())
-    return {"success": True, "selfies_used": len(images)}
+    images = []
+    for selfie in selfies:
+        contents = await selfie.read()
+        img_array = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is not None:
+            images.append(img)
+        
+    try:
+        embedding = build_user_embedding(images)
+        upsert_user_embedding(user_id, embedding.tolist())
+        return {"success": True, "selfies_used": len(images)}
 
-except ValueError as e:
-    raise HTTPException(status_code = 400, detail = str(e))
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
 
 @app.post("/search", response_model = SearchResponse)
 def search (req: SearchRequest):

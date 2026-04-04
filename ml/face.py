@@ -12,13 +12,13 @@ def get_model():
     global _app
     if _app is None:
         _app = FaceAnalysis(
-            name='buffalo_1',
+            name='buffalo_l',
             #Provider is cpu as i dont have gpu 😭 , if you have gpu use  onxruntime-gpu
-            providers=['CPUExectutionProvider']
+            providers=['CPUExecutionProvider']
         )
         #ctx_id=0 means use GPU , id=1 means cpu
         #det_size is the resolution detection size (640x640) but for bigger pic (1200x1200) in prod
-        _app.prepare(ctx_id=1, det_size=(640x640))
+        _app.prepare(ctx_id=1, det_size=(640, 640))
     return _app
 
 
@@ -94,7 +94,7 @@ def build_user_embedding(selfie_images: list[np.ndarray]) -> np.ndarray:
     avg = np.mean(embeddings, axis=0)
 
     #Renormalize it as averaging makes its magnitude <1.0 
-    avg = avg / np.lialg.norm(avg)
+    avg = avg / np.linalg.norm(avg)
 
 
     return avg

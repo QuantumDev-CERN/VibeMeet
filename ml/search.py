@@ -2,10 +2,12 @@ import psycopg2.extras
 from db import get_connection
 
 def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
+    print(f"Attempting to store {len(faces)} faces")
     """
     Bulk insert all face embeddings from a photo into pgvector.
     """
     if not faces:
+        print("No faces to store, returning early")
         return
     
     conn = get_connection()
@@ -42,6 +44,10 @@ def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
                 (len(faces), photo_id)
             )
         conn.commit()
+        print("Successfully stored faces")
+    except Exception as e:
+        print(f"DB ERROR: {e}")  # this is what's failing silently
+        raise
     finally:
         conn.close()
 
