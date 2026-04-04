@@ -1,24 +1,23 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: vibemeet-postgres
+    # this image comes with pgvector pre-installed
+    # no manual extension building needed
+    container_name: VibeMeet_db
     environment:
-      POSTGRES_DB: vibemeet
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: VibeMeet
+      POSTGRES_PASSWORD: VibeMeet
+      POSTGRES_DB: VibeMeet
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    container_name: vibemeet-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      # anything in initdb.d/ runs automatically on first startup
+      # so your schema gets applied without you doing anything manually
 
 volumes:
   postgres_data:
-  redis_data:
+    # named volume = data persists even when container stops
+    # if you used a bind mount your data would be in a local folder
+    # named volumes are managed by docker, cleaner
