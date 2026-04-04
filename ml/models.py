@@ -5,9 +5,6 @@ class ProcessPhotoRequest(BaseModel):
     photo_id:str
     thread_id:str
     image_url:str #R2 URL to download the photo from 
-class IndexUserRequest(BaseModel):
-    user_id:str
-    #selfie comes as file upload
 class SearchRequest(BaseModel):
     user_id:str
     thread_id:str
