@@ -35,3 +35,6 @@ venv/
 Thumbs.db
 .idea/
 .vscode/
+
+#Test Files
+test_images
