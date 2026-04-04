@@ -1,4 +1,13 @@
 fastapi
 uvicorn
-psycopg[binary]
+insightface==0.7.3
+onnxruntime              # CPU for dev, swap to onnxruntime-gpu in prod
+opencv-python-headless
+numpy
+psycopg2-binary          # postgres + pgvector queries
+python-multipart         # fastapi file uploads
 pydantic
+python-dotenv
+rq                       # job queue backed by redis
+redis
+requests
