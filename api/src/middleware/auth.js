@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 
 export function authenticate(req, res, next){
-    const header = req.header.authorization;
+    const header = req.headers.authorization;
 
     if(!header || !header.startsWith('Bearer ')){
         return res.status(401).json({error: 'Missing or malformed token'});
