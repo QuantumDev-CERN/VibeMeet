@@ -58,7 +58,7 @@ router.post('/', authenticate, async (req, res, next ) => {
     }
 });
 
-router.get('/', authenticate, async (req, res, next) => {
+router.get('/', async (req, res, next) => {
     try {
         // Changes in scheme to have member_count , creating subquery for count isnt optimal.
 
@@ -96,7 +96,7 @@ router.get('/:slug', async (req, res, next) => {
             FROM communities WHERE slug = $1`,
             [slug]);
         
-        if (results.rows.length === 0) {
+        if (result.rows.length === 0) {
             return res.status(404).json({error: 'Community not found'});
         }
 
