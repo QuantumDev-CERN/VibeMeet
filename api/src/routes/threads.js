@@ -20,7 +20,7 @@ router.post('/', authenticate, async(req, res, next) => {
 
     const result = await pool.query(
         `INSERT INTO threads (community_id, created_by, title, description, event_date, location)
-        VALUES ($1, $2, $3, $4) RETURNING * `,
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING * `,
         [communityId, userId, title, description ?? null, event_date ?? null, location ?? null]
     );
 
@@ -64,3 +64,5 @@ router.get('/:id', async(req, res, next) => {
         next(err);
     }
 });
+
+export default router;
