@@ -57,3 +57,21 @@ router.post('/', authenticate, async (req, res, next ) => {
         next(err);
     }
 });
+
+router.get('/', authenticate, async (req, res, next) => {
+    try {
+        // Changes in scheme to have member_count , creating subquery for count isnt optimal.
+
+        const result = await pool.query(
+            `SELECT
+            c.id, c.name, c.slug, c.description, c.banner_url, c.created_at,
+            (SELECT COUNT(*) FROM community_members cm WHERE cm.community_id = c.id)
+            AS member_count FROM communities c
+            ORDER BY c.created_at DESC`
+        );
+        res.json({ communities: result.rows});
+
+    } catch(err) {
+        next(err)
+    }
+});
