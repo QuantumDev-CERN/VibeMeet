@@ -19,13 +19,14 @@ CREATE TABLE IF NOT EXISTS user_face_embeddings (
 );
 
 CREATE TABLE IF NOT EXISTS communities (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name        TEXT UNIQUE NOT NULL,
-  slug        TEXT UNIQUE NOT NULL,
-  description TEXT,
-  banner_url  TEXT,
-  created_by  UUID REFERENCES users(id),
-  created_at  TIMESTAMPTZ DEFAULT now()
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         TEXT UNIQUE NOT NULL,
+  slug         TEXT UNIQUE NOT NULL,
+  description  TEXT,
+  banner_url   TEXT,
+  created_by   UUID REFERENCES users(id),
+  member_count INT DEFAULT 1,  -- starts at 1 because creator auto-joins
+  created_at   TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS community_members (
