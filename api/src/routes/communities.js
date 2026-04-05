@@ -96,3 +96,31 @@ router.get('/:slug', async (req, res, next) => {
         next(err);
     }
 });
+
+router.post('/:id/join', authenticate, async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        //Verify Existance of community
+        const community = await pool.query(
+            `SELECT id FROM communities WHERE id = $1`,[id]
+        );
+
+        if (community.rows.length === 0) return res.status(404).json({error: 'Community not found'});
+
+        //On conflict DO NOTHING (idompotent rule)
+
+        await pool.query(`
+            INSERT INTO community_members (user_id, community_id, role)
+            VALUES ($1, $2, 'member')
+            ON CONFLICT (user_id, community_id) DO NOTHING`,
+        [userId,id]);
+
+        res.json({message: 'Joined successfully'});
+    } catch(err) {
+        next(err);
+    }
+});
+
+export default router;
