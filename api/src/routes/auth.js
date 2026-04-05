@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import pool  from '../db';
+import pool  from '../db.js';
 
 const router = Router();
 
@@ -30,7 +30,7 @@ router.post('/register', async (req, res, next) => {
         const hash = await bcrypt.hash(password, 12); //12-> salt rounds secure
 
         const result = await pool.query(
-            `INSERT INTO users (username, email, password_hash)
+            `INSERT INTO users (username, email, password)
             VALUES ($1, $2, $3)
             RETURNING id, username, email, created_at`,
             [username, email, hash]
@@ -41,7 +41,7 @@ router.post('/register', async (req, res, next) => {
         const token = jwt.sign(
             {id: user.id, username: user.username, email: user.email},
             process.env.JWT_SECRET,
-            { expiresIN: '7d'}
+            { expiresIn: '7d'}
         );
 
         res.status(201).json({ token, user});
@@ -54,9 +54,9 @@ router.post('/register', async (req, res, next) => {
 // POST /api/auth/login
 router.post('/login', async(req, res, next) => {
     try {
-        const {email, password} = req.body;
+        const {email, password: inputpassword} = req.body;
 
-        if(!email || !password) {
+        if(!email || !inputpassword) {
             return res.status(400).json({error: 'email and password are required'});
         }
 
@@ -70,7 +70,7 @@ router.post('/login', async(req, res, next) => {
         }
 
         const user = result.rows[0];
-        const valid = await bcrypt.compare(password, user.password_hash);
+        const valid = await bcrypt.compare(inputpassword, user.password);
 
         if (!valid) {
             return res.status(401).json({error: 'Invalid Credentials'});
@@ -83,10 +83,11 @@ router.post('/login', async(req, res, next) => {
         );
 
         // Dont send Password_hash back
-        const {password_hash, ...safeUser} = user;
+        const {password, ...safeUser} = user;
 
         res.json({token, user:safeUser});
     } catch (err) {
         next(err);
     }
 });
+export default router;
