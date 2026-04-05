@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import threadRoutes from './threads.js';
 
 const router = Router();
 
@@ -138,5 +139,7 @@ router.post('/:id/join', authenticate, async (req, res, next) => {
         next(err);
     }
 });
+
+router.use('/:communityId/threads', threadRoutes);
 
 export default router;
