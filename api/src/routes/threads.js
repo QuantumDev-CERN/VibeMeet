@@ -60,7 +60,7 @@ router.get('/:id', async(req, res, next) => {
         res.json({thread: result.rows[0]});
 
 
-    } catch {err} {
+    } catch (err) {
         next(err);
     }
 });
