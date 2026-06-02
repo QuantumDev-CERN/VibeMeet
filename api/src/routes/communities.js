@@ -16,7 +16,10 @@ router.post('/', authenticate, async (req, res, next ) => {
     // Slug: "My Cool Event" → "my-cool-event"
     // URL safe transform
 
-    const slug = name.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const slug = name.toLowerCase().trim()
+                                        .replace(/\s+/g, '-')
+                                        .replace(/[^a-z0-9-]/g, '')
+                                        .replace(/-+/g, '-');
 
      //If the community_members insert fails, the community row is rolled back.
      const client = await pool.connect();

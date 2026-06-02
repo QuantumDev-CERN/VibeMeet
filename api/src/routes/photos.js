@@ -4,7 +4,6 @@ import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { uploadPhoto, deletePhoto, getSignedPhotoUrl } from '../lib/r2.js';
 import { processPhoto } from '../lib/ml.js';
-import { all } from 'axios';
 
 
 const router = Router();
@@ -21,7 +20,7 @@ const MAGIC_BYTES = {
         bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
     },
     'image/webp': {
-        offset: 0,
+        offset: 8,
         bytes: [0x57, 0x45, 0x42, 0x50],
     },
 };
@@ -36,7 +35,7 @@ const ALLOWED_EXTENSIONS = {
 const MAX_FILE_SIZE = 10*1024*1024;
 const FREE_TIER_LIMIT = 30;
 const SIGNED_URL_TTL = 3600;
-const SIGNED_UEL_CONCURRENCY = 10;
+const SIGNED_URL_CONCURRENCY = 10;
 
 
 //Validate magic bytes against binary of buffer
@@ -53,34 +52,35 @@ function validateMagicBytes(buffer) {
 }
 
 const upload = multer({
-    storage: multer>memoryStorage(),
+    storage: multer.memoryStorage(),
     limits: { fileSize: MAX_FILE_SIZE},
 });
 
 //Controlled concurrency helper
-//Runs async tasks over an array with at most 'limits' running in parallel
+//Runs async tasks over an array with at most 'limit' running in parallel
 
 async function mapWithConcurrency(items, limit, asyncFn){
-    const result = [];
+    const results = [];
     let index = 0;
 
-    async function worker () {
+    async function runWorker() {
         while (index < items.length) {
             const current = index++;
-            results[current = await asyncFn(items[current], current)];
+            results[current] = await asyncFn(items[current], current);
         }
     }
 
-    const worker = Array.from({ length: Math.min(limit, items.length)}, worker);
-    await Promise.all(worker);
+    const workers = Array.from({ length: Math.min(limit, items.length) }, runWorker);
+    await Promise.all(workers);
     return results;
 }
 
 
 // POST /api/photos
 
-router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
+router.post('/', authenticate, upload.single('file'), async (req, res, next) => {
     let storageKey = null; //track for R2 cleanup if anything after upload fails
+    let photoId = null;
 
     try {
         const { thread_id } = req.body;
@@ -92,12 +92,12 @@ router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
 
 
         const detectMime = validateMagicBytes(req.file.buffer);
-        const ext = ALLOWED_EXTENSIONS(detectMime);
+        const ext = ALLOWED_EXTENSIONS[detectMime];
 
 
 
 
-        //verify existent of thread_id
+        //verify existence of thread_id
         const threadResult = await pool.query(
             'SELECT id FROM threads WHERE id = $1',
             [thread_id]
@@ -122,7 +122,7 @@ router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
                 SELECT $1, $2, 'pending', 'pending'
                 WHERE (
                 SELECT COUNT(*) FROM photos WHERE uploaded_by = $2) < $3 
-                RETURNING id`
+                RETURNING id`,
                 [thread_id, userId, FREE_TIER_LIMIT]
             );
 
@@ -130,10 +130,10 @@ router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
             await client.query('COMMIT');
 
             if (insertResult.rows.length === 0) {
-                return res.status(403).json({error: 'Free tier limit reached (${FREE_TIER_LIMIT} photos)',});
+                return res.status(403).json({ error: `Free tier limit reached (${FREE_TIER_LIMIT} photos)` });
             }
 
-            const photoId = insertResult.rows[0].id;
+            photoId = insertResult.rows[0].id;
         } catch ( err ) {
             await client.query('ROLLBACK');
             throw err;
@@ -165,7 +165,7 @@ router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
 
         // Trigger ML 
         processPhoto(photo.id, thread_id, url).catch((err) => {
-            console.error(`[ML] proccessing failed for photo ${photo.id}: ${err.message}`);
+            console.error(`[ML] processing failed for photo ${photo.id}: ${err.message}`);
         });
 
 
@@ -174,9 +174,44 @@ router.post('/', authenticate, upload.single('file'),async (req, res, next) => {
         // R2 upload succeeded but something after it failed — clean up orphaned file
         if (storageKey) {
             deletePhoto(storageKey).catch((e) => {
-                console.error('[R2] cleanup failed for key $[storagekey]: ${e.message}')
+                console.error(`[R2] cleanup failed for key ${storageKey}: ${e.message}`);
             });
         }
         next(err);
     }
 });
+
+// GET /api/photos/thread/:threadId
+
+router.get('/thread/:threadId', async (req, res, next) => {
+    try {
+        const { threadId } = req.params;
+
+        const result = await pool.query(
+            `SELECT id, thread_id, uploaded_by, indexed, face_count, uploaded_at
+            FROM photos WHERE thread_id = $1 ORDER BY uploaded_at DESC`,
+            [threadId]
+        );
+
+        const photos = await mapWithConcurrency(result.rows, SIGNED_URL_CONCURRENCY, async (photo) => {
+            const thumbnail_url = photo.url;
+            const download_url = await getSignedPhotoUrl(photo.storage_key, SIGNED_URL_TTL);
+            return {
+                id: photo.id,
+                thread_id: photo.thread_id,
+                uploaded_by: photo.uploaded_by,
+                indexed: photo.indexed,
+                face_count: photo.face_count,
+                uploaded_at: photo.uploaded_at,
+                thumbnail_url,
+                download_url,
+            };
+        });
+
+        res.json({ photos });
+    } catch (err) {
+        next(err);
+    }
+});
+
+export default router;

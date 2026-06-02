@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 import requests
 import os
+
 #Model loads on service start instead of each request . Performance Optimization
 _app=None
 
@@ -16,9 +17,9 @@ def get_model():
             #Provider is cpu as i dont have gpu 😭 , if you have gpu use  onxruntime-gpu
             providers=['CPUExecutionProvider']
         )
-        #ctx_id=0 means use GPU , id=1 means cpu
+        #ctx_id=0 means use GPU , ctx_id=-1 means cpu (InsightFace convention)
         #det_size is the resolution detection size (640x640) but for bigger pic (1200x1200) in prod
-        _app.prepare(ctx_id=1, det_size=(640, 640))
+        _app.prepare(ctx_id=-1, det_size=(640, 640))
     return _app
 
 
@@ -51,7 +52,7 @@ def extract_faces(img: np.ndarray , min_confidence: float = 0.5):
         if face.det_score < min_confidence:
             continue
         
-        bbox = face.bbox.astype(int).tolist() # [z1,z4,y4,x2]
+        bbox = face.bbox.astype(int).tolist() # [x1,y1,x2,y2]
 
         results.append({
             #normed_embedding is already L2-normalized , its magnitude is 1.0
@@ -68,25 +69,28 @@ def extract_faces(img: np.ndarray , min_confidence: float = 0.5):
     return results
 
 def build_user_embedding(selfie_images: list[np.ndarray]) -> np.ndarray:
-    #Take multiple selfie  under diff condition extract face from each return a single avergaged identity vector
+    #Take multiple selfies under diff conditions, extract face from each, return a single averaged identity vector
 
-    model=get_model()
+    model = get_model()
     embeddings = []
 
     for img in selfie_images:
         faces = model.get(img)
 
         if not faces:
-            #No face detectted in this selfie, skip it
+            #No face detected in this selfie, skip it
             continue
-        #Take the largest face if multiple face detected
+        #Take the largest face if multiple faces detected
         #(user might be holding phone in crowd)
-        largest = max (faces , key=lambda f:( (f.bbox[2]-f.bbox[0]) * (f.bbox[3] - f.bbox[1]) )
-                )
+        largest = max(
+            faces,
+            key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+        )
         
         #Only use high confidence selfie detections
-        if largest.det_score > 0.7 :
+        if largest.det_score > 0.7:
             embeddings.append(largest.normed_embedding)
+
     if not embeddings:
         raise ValueError("No Valid face detected in any selfie")
 
@@ -95,6 +99,5 @@ def build_user_embedding(selfie_images: list[np.ndarray]) -> np.ndarray:
 
     #Renormalize it as averaging makes its magnitude <1.0 
     avg = avg / np.linalg.norm(avg)
-
 
     return avg

@@ -14,7 +14,7 @@ app = FastAPI()
 #Only Node service calls this
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://localhost:3000"],
+    allow_origins=["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -76,7 +76,7 @@ async def index_user(
         raise HTTPException(status_code = 400, detail = str(e))
 
 @app.post("/search", response_model = SearchResponse)
-def search (req: SearchRequest):
+def search(req: SearchRequest):
     """
         Find all photos in a thread where the user appears.
         Returns photo_ids + similarity scores.
