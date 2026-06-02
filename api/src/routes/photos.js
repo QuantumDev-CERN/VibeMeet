@@ -188,7 +188,7 @@ router.get('/thread/:threadId', async (req, res, next) => {
         const { threadId } = req.params;
 
         const result = await pool.query(
-            `SELECT id, thread_id, uploaded_by, indexed, face_count, uploaded_at
+            `SELECT id, thread_id, uploaded_by, storage_key, url, indexed, face_count, uploaded_at
             FROM photos WHERE thread_id = $1 ORDER BY uploaded_at DESC`,
             [threadId]
         );
