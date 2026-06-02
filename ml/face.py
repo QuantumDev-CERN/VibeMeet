@@ -15,11 +15,12 @@ def get_model():
         _app = FaceAnalysis(
             name='buffalo_l',
             #Provider is cpu as i dont have gpu 😭 , if you have gpu use  onxruntime-gpu
-            providers=['CPUExecutionProvider']
+            #Switched to gpu , now i have rtx 5060 , much faster inference
+            providers=['CUDAExecutionProvider']
         )
         #ctx_id=0 means use GPU , ctx_id=-1 means cpu (InsightFace convention)
         #det_size is the resolution detection size (640x640) but for bigger pic (1200x1200) in prod
-        _app.prepare(ctx_id=-1, det_size=(640, 640))
+        _app.prepare(ctx_id=0, det_size=(640, 640))
     return _app
 
 

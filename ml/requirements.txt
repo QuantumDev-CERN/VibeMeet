@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 insightface==0.7.3
-onnxruntime              # CPU for dev, swap to onnxruntime-gpu in prod
+onnxruntime-gpu              # CPU for dev, swap to onnxruntime-gpu in prod
 opencv-python-headless
 numpy
 psycopg2-binary          # postgres + pgvector queries
