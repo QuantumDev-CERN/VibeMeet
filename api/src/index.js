@@ -2,11 +2,11 @@ import express from 'express';
 import dotenv from'dotenv';
 
 import authRoutes from './routes/auth.js';
-//import userRoutes from './routes/users.js';
+import userRoutes from './routes/users.js';
 import communityRoutes from './routes/communities.js';
 import threadRoutes from './routes/threads.js';
 import photoRoutes from './routes/photos.js';
-//import searchRoutes from './routes/search.js';
+import searchRoutes from './routes/search.js';
 
 dotenv.config();
 
@@ -16,11 +16,11 @@ app.use(express.json()); //Parse JSON bodies
 
 //Routes
 app.use('/api/auth', authRoutes);
-//app.use('/api/users', userRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/communities', communityRoutes);
 app.use('/api/threads', threadRoutes);
 app.use('/api/photos', photoRoutes);
-//app.use('/api/search', searchRoutes);
+app.use('/api/search', searchRoutes);
 
 
 //Global error handler

@@ -82,7 +82,10 @@ CREATE TABLE IF NOT EXISTS photo_faces (
   photo_id    UUID REFERENCES photos(id) ON DELETE CASCADE,
   user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
   confidence  FLOAT,
-  confirmed   BOOLEAN DEFAULT false,
+  -- NULL  = unreviewed (user has not responded yet)
+  -- true  = confirmed  (user said "yes that's me")
+  -- false = rejected   (user said "that's not me" — hidden from feed by default)
+  confirmed   BOOLEAN DEFAULT NULL,
   -- bbox of the matched face within this specific photo
   -- carried over from ML search result, needed for UI face highlighting
   bbox        JSONB,
