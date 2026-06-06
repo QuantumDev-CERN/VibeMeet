@@ -1,6 +1,19 @@
 import psycopg2.extras
 from db import get_connection
 
+# Minimum InsightFace detection confidence to include a face in search results.
+# det_score is produced by the detection model, not the recognition model.
+# Faces below this threshold are low quality — blurry, partial, side-on, reflections.
+# 0.7 is conservative — keeps high quality detections, filters out noise.
+DET_SCORE_THRESHOLD = 0.7
+
+# Maximum number of face matches returned per search.
+# Caps the pgvector scan result set — prevents unbounded responses at scale.
+# At Coachella scale a thread could have 500k face embeddings — without a limit
+# the query returns every match which Node then has to process and zip.
+# 100 is generous — if you appear in 100 photos at one event you know about it.
+SEARCH_LIMIT = 100
+
 def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
     print(f"Attempting to store {len(faces)} faces")
     """
@@ -46,7 +59,7 @@ def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
         conn.commit()
         print("Successfully stored faces")
     except Exception as e:
-        print(f"DB ERROR: {e}")  # this is what's failing silently
+        print(f"DB ERROR: {e}")
         raise
     finally:
         conn.close()
@@ -77,7 +90,7 @@ def upsert_user_embedding(user_id: str, embedding: list):
         conn.close()
 
 
-def search_faces(user_id: str, thread_id: str, threshold: float = 0.45):
+def search_faces(user_id: str, thread_id: str, threshold: float = 0.45, limit: int = SEARCH_LIMIT):
     """
     Find all photos in a thread where the user's face appears.
     
@@ -85,6 +98,13 @@ def search_faces(user_id: str, thread_id: str, threshold: float = 0.45):
     <=> operator in pgvector = cosine distance
     So: similarity = 1 - distance
     threshold 0.45 similarity = 0.55 distance
+
+    Filters:
+    - similarity > threshold     — only confident face matches
+    - det_score > DET_SCORE_THRESHOLD — only high quality detections
+      (filters out blurry faces, reflections, partial faces)
+    - LIMIT — caps result set for scale
+      (prevents unbounded scan at Coachella-scale threads)
     """
     conn = get_connection()
     try:
@@ -101,8 +121,13 @@ def search_faces(user_id: str, thread_id: str, threshold: float = 0.45):
             
             user_embedding = row['embedding']
             
-            # Search for similar faces scoped to this thread
-            # 1 - (embedding <=> query) converts distance to similarity
+            # Search for similar faces scoped to this thread.
+            # Two filters working together:
+            #   1. similarity > threshold — recognition quality
+            #   2. det_score > DET_SCORE_THRESHOLD — detection quality
+            # Both must pass — a high similarity match on a low quality detection
+            # (reflection, blur) is still a bad match.
+            # LIMIT caps the result set — top matches by similarity score.
             cur.execute(
                 """
                 SELECT 
@@ -113,9 +138,11 @@ def search_faces(user_id: str, thread_id: str, threshold: float = 0.45):
                 WHERE 
                     thread_id = %s
                     AND 1 - (embedding <=> %s::vector) > %s
+                    AND det_score > %s
                 ORDER BY similarity DESC
+                LIMIT %s
                 """,
-                (user_embedding, thread_id, user_embedding, threshold)
+                (user_embedding, thread_id, user_embedding, threshold, DET_SCORE_THRESHOLD, limit)
             )
             
             results = cur.fetchall()

@@ -1,8 +1,9 @@
 services:
+
   postgres:
     image: pgvector/pgvector:pg16
-    # this image comes with pgvector pre-installed
-    # no manual extension building needed
+    # pgvector image comes with the vector extension pre-installed
+    # no manual extension building needed — CREATE EXTENSION IF NOT EXISTS vector just works
     container_name: vibemeet_db
     environment:
       POSTGRES_USER: vibemeet
@@ -12,17 +13,54 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # schema.sql runs automatically on first container creation only
+      # if the volume already has data this is skipped — won't re-run on restart
       - ./infra/schema.sql:/docker-entrypoint-initdb.d/schema.sql:z
-      # anything in initdb.d/ runs automatically on first startup
-      # so your schema gets applied without you doing anything manually
+    healthcheck:
+      # pg_isready pings the DB and returns 0 when it's accepting connections
+      # other services use depends_on: condition: service_healthy to wait for this
+      test: ["CMD-SHELL", "pg_isready -U vibemeet -d vibemeet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   redis:
-      image: redis:7-alpine
-      container_name: vibemeet_redis
-      ports:
-        - "6379:6379"
+    image: redis:7-alpine
+    # alpine = minimal image, ~30MB vs ~100MB for full debian
+    container_name: vibemeet_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    # --appendonly yes        → AOF persistence — Redis writes every command to disk
+    #                           without this Redis is purely in-memory — restart = lose all data
+    #                           search sessions, rate limit counters all gone on restart
+    # --appendfsync everysec  → flush to disk every second — good balance of safety vs perf
+    #                           "always" is safer but slower, "no" is fastest but risky
+    # --maxmemory 256mb       → cap Redis memory — without this it will grow unbounded
+    #                           on a dev machine that's fine but on a server it will OOM
+    # --maxmemory-policy allkeys-lru → when memory is full, evict least recently used keys
+    #                           LRU is right for a cache — old search sessions get evicted first
+    healthcheck:
+      # redis-cli ping returns PONG when Redis is ready
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
 volumes:
   postgres_data:
-    # named volume = data persists even when container stops
-    # if you used a bind mount your data would be in a local folder
-    # named volumes are managed by docker, cleaner
+    # named volume — data persists when container stops or restarts
+    # docker-compose down does NOT delete this
+    # docker-compose down -v DOES delete this — use when you want a clean slate
+  redis_data:
+    # same — persists AOF log across restarts
+    # docker-compose down -v wipes this too — rate limits and search sessions reset
