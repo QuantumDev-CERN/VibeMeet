@@ -62,7 +62,14 @@ CREATE TABLE IF NOT EXISTS photos (
   url_thumb           TEXT NOT NULL,
   indexed             BOOLEAN DEFAULT false,
   face_count          INT DEFAULT 0,
-  uploaded_at         TIMESTAMPTZ DEFAULT now()
+  uploaded_at         TIMESTAMPTZ DEFAULT now(),
+  -- Retry tracking for the RQ worker (ml/Queue.py). retry_count increments on
+  -- each failed processing attempt; once it hits MAX_RETRIES the worker's poll
+  -- query stops picking the photo up. last_error/last_attempted_at are for
+  -- debugging stuck photos without digging through worker logs.
+  retry_count         INT DEFAULT 0,
+  last_error          TEXT,
+  last_attempted_at   TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS face_embeddings (

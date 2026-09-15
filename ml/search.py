@@ -20,9 +20,22 @@ def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
     Bulk insert all face embeddings from a photo into pgvector.
     """
     if not faces:
-        print("No faces to store, returning early")
+        # No faces found is a legitimate outcome (landscape shot, empty room, etc.),
+        # not a failure — still mark the photo indexed=true with face_count=0 so it
+        # doesn't get endlessly re-picked-up by the "indexed=false" retry query.
+        print("No faces to store, marking photo indexed with face_count=0")
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE photos SET indexed = true, face_count = 0 WHERE id = %s",
+                    (photo_id,)
+                )
+            conn.commit()
+        finally:
+            conn.close()
         return
-    
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
