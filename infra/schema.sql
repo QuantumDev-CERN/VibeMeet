@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS user_face_embeddings (
   embedding     vector(512) NOT NULL,
   selfie_count  INT DEFAULT 0,
   created_at    TIMESTAMPTZ DEFAULT now(),
+  -- DELETE /api/users/me/face flips this to false instead of deleting the row
+  -- or cascading through photo_faces (which could be hundreds of rows for a
+  -- user active across many events — that fan-out is the "write heavy" part
+  -- we're avoiding). Same pattern as photos.indexed: single-row flag flip.
+  -- search_faces() (ml/search.py) filters on active = true, so a deactivated
+  -- user is treated as "no face registered" for all future searches.
+  -- Re-registering (POST /me/face) sets this back to true.
+  active        BOOLEAN DEFAULT true,
   UNIQUE(user_id)
 );
 

@@ -4,6 +4,7 @@ import archiver from 'archiver';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateUUID } from '../middleware/validate.js';
 import { search as mlSearch } from '../lib/ml.js';
 import { getSignedPhotoUrl } from '../lib/r2.js';
 import redis, { isRedisHealthy, TTL, SEARCH_RATE_LIMIT } from '../lib/redis.js';
@@ -36,12 +37,6 @@ async function mapWithConcurrency(items, limit, asyncFn) {
     const workers = Array.from({ length: Math.min(limit, items.length) }, runWorker);
     await Promise.all(workers);
     return results;
-}
-
-// UUID v4 format validation — catches bad input before Postgres throws
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function isValidUUID(str) {
-    return UUID_REGEX.test(str);
 }
 
 // Redis rate limit using atomic INCR pattern.
@@ -100,7 +95,7 @@ async function getR2Stream(storageKey, timeoutMs = 15000) {
 // Stores results in Redis (ephemeral) and photo_faces (permanent).
 // Returns metadata only — no URLs generated here.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/', authenticate, async (req, res, next) => {
+router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
             return res.status(503).json({ error: 'Search service temporarily unavailable' });
@@ -108,14 +103,6 @@ router.post('/', authenticate, async (req, res, next) => {
 
         const { thread_id, threshold } = req.body;
         const userId = req.user.id;
-
-        // ── Input validation ──────────────────────────────────────────────────
-        if (!thread_id) {
-            return res.status(400).json({ error: 'thread_id is required' });
-        }
-        if (!isValidUUID(thread_id)) {
-            return res.status(400).json({ error: 'thread_id must be a valid UUID' });
-        }
 
         // ── Thread existence check ────────────────────────────────────────────
         // Also fetches community_id for the membership check below.
@@ -147,8 +134,10 @@ router.post('/', authenticate, async (req, res, next) => {
         // ── User embedding check ──────────────────────────────────────────────
         // Check before hitting ML — saves a network round-trip and gives a
         // cleaner error message than letting ML raise a ValueError.
+        // active = true — a deactivated registration (DELETE /me/face) reads
+        // as "not registered" here, same as ML's search_faces() filter.
         const embeddingResult = await pool.query(
-            'SELECT id FROM user_face_embeddings WHERE user_id = $1',
+            'SELECT id FROM user_face_embeddings WHERE user_id = $1 AND active = true',
             [userId]
         );
         if (embeddingResult.rows.length === 0) {
@@ -259,7 +248,7 @@ router.post('/', authenticate, async (req, res, next) => {
 // Verifies requested photo_ids against Redis search results for security.
 // Only generates signed URLs for explicitly requested photos.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/download', authenticate, async (req, res, next) => {
+router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body', isArray: true }), async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
             return res.status(503).json({ error: 'Download service temporarily unavailable' });
@@ -270,9 +259,6 @@ router.post('/download', authenticate, async (req, res, next) => {
 
         if (!search_key) {
             return res.status(400).json({ error: 'search_key is required' });
-        }
-        if (!Array.isArray(photo_ids) || photo_ids.length === 0) {
-            return res.status(400).json({ error: 'photo_ids must be a non-empty array' });
         }
 
         // ── Read search results from Redis ────────────────────────────────────

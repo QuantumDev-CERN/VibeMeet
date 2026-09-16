@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateUUID } from '../middleware/validate.js';
 import { indexUser } from '../lib/ml.js';
 import { getSignedPhotoUrl } from '../lib/r2.js';
 
@@ -93,12 +94,11 @@ router.get('/me', authenticate, async (req, res, next) => {
 //
 // Re-registration: fully supported — ML upserts, better selfies improve
 // future searches. Existing photo_faces rows are NOT deleted — the user
-// keeps their history. Future searches use the new embedding.
+// keeps their history. Future searches use the new embedding. Also
+// reactivates (active = true) if the user previously called DELETE
+// /me/face — see ml/search.py upsert_user_embedding.
 //
-// TODO: DELETE /api/users/me/face — right to erasure (GDPR).
-//       Should delete user_face_embeddings + photo_faces rows for this user.
-//       Not implemented yet — needs explicit product decision on cascading
-//       behaviour (does deleting face data remove photos from their feed?).
+// Erasure: DELETE /api/users/me/face (below) deactivates the registration.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/me/face', authenticate, upload.array('selfies', MAX_SELFIES), async (req, res, next) => {
     try {
@@ -130,8 +130,10 @@ router.post('/me/face', authenticate, upload.array('selfies', MAX_SELFIES), asyn
         // ── Check if user already has a registered embedding ─────────────────
         // Used to signal in the response whether this is a first registration
         // or an update — lets the client show the right message to the user.
+        // active = true: a deactivated (DELETE'd) registration counts as
+        // "first registration" again from the client's perspective.
         const existingResult = await pool.query(
-            'SELECT id FROM user_face_embeddings WHERE user_id = $1',
+            'SELECT id FROM user_face_embeddings WHERE user_id = $1 AND active = true',
             [userId]
         );
         const isUpdate = existingResult.rows.length > 0;
@@ -300,7 +302,7 @@ router.get('/me/photos', authenticate, async (req, res, next) => {
 // Future: rejected matches (false) could be used as negative training
 // signal for ML model improvement. Not implemented yet.
 // ─────────────────────────────────────────────────────────────────────────────
-router.patch('/me/photos/:photoId/confirm', authenticate, async (req, res, next) => {
+router.patch('/me/photos/:photoId/confirm', authenticate, validateUUID('photoId'), async (req, res, next) => {
     try {
         const { photoId } = req.params;
         const { action }  = req.body;
@@ -335,6 +337,47 @@ router.patch('/me/photos/:photoId/confirm', authenticate, async (req, res, next)
         }
 
         res.json({ match: result.rows[0] });
+
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /api/users/me/face
+// Right to erasure (partial) — deactivates the user's face registration.
+//
+// Does NOT hard-delete the embedding row or touch photo_faces. Cascading
+// through photo_faces would mean updating/deleting one row per photo this
+// user has ever matched in — potentially hundreds for someone active across
+// many events. Instead this flips a single boolean (user_face_embeddings.active),
+// same pattern as photos.indexed. search_faces() (ML side) filters on
+// active = true, so this user is treated as unregistered for all future
+// searches. Existing photo_faces matches and the user's own photo history
+// (GET /me/photos) are left untouched — this stops future matching, it
+// doesn't erase past matches.
+//
+// Re-registering (POST /me/face again) flips active back to true.
+// ─────────────────────────────────────────────────────────────────────────────
+router.delete('/me/face', authenticate, async (req, res, next) => {
+    try {
+        const userId = req.user.id;
+
+        const result = await pool.query(
+            `UPDATE user_face_embeddings
+             SET active = false
+             WHERE user_id = $1 AND active = true
+             RETURNING id`,
+            [userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'No active face registration found',
+            });
+        }
+
+        res.json({ message: 'Face registration removed. You will no longer appear in future searches.' });
 
     } catch (err) {
         next(err);

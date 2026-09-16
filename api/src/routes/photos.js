@@ -3,6 +3,7 @@ import multer from 'multer';
 import sharp from 'sharp';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateUUID } from '../middleware/validate.js';
 import { uploadPhoto, deletePhoto, getSignedPhotoUrl } from '../lib/r2.js';
 import { processPhoto } from '../lib/ml.js';
 
@@ -236,7 +237,7 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
 // Thumbnails: 5 min TTL — for UI preview only.
 // Downloads: 1 hour TTL — for actual file saving.
 // storage_key and storage_key_thumb are never returned to the client.
-router.get('/thread/:threadId', async (req, res, next) => {
+router.get('/thread/:threadId', validateUUID('threadId'), async (req, res, next) => {
     try {
         const { threadId } = req.params;
 
@@ -283,7 +284,7 @@ router.get('/thread/:threadId', async (req, res, next) => {
 //      — written at search time, this is the persistent record of ML confirmation
 // Returns a 1-hour signed download URL for the download variant.
 // storage_key is never returned.
-router.get('/:photoId/download', authenticate, async (req, res, next) => {
+router.get('/:photoId/download', authenticate, validateUUID('photoId'), async (req, res, next) => {
     try {
         const { photoId } = req.params;
         const userId = req.user.id;

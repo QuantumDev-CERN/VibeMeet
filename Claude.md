@@ -442,7 +442,7 @@ Note: `onnxruntime-gpu` is now the real dependency (GPU inference is live), not 
 - [x] `users.js` — profile, selfie submission, match history, confirm/reject
 - [x] `lib/redis.js` — rate limiting + ephemeral search sessions
 - [x] Switch ML inference to GPU (CUDAExecutionProvider)
-- [ ] **Verify `.env` casing matches `docker-compose.yml`** (`vibemeet` vs `VibeMeet`) — check before debugging any "connection refused"-looking auth failures
+- [x] **Verify `.env` casing matches `docker-compose.yml`** (`vibemeet` vs `VibeMeet`) — check before debugging any "connection refused"-looking auth failures
 - [ ] Redis + RQ background worker to retry `indexed=false` photos — `Queue.py` is still empty, this is the biggest real gap on the backend
 - [ ] `DELETE /api/users/me/face` — GDPR erasure endpoint, needs a product decision on cascading behavior first
 - [ ] Shared UUID-validation middleware (currently only `search.js` validates UUIDs locally; other routes still 500 on malformed IDs)

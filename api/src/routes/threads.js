@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateUUID } from '../middleware/validate.js';
 
 const router = Router({ mergeParams: true});
 
@@ -46,7 +47,7 @@ router.get('/' ,async (req, res, next) => {
     }
 });
 
-router.get('/:id', async(req, res, next) => {
+router.get('/:id', validateUUID('id'), async(req, res, next) => {
     try{
         const { id } =req.params;
 

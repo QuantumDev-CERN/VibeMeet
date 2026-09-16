@@ -83,17 +83,20 @@ def upsert_user_embedding(user_id: str, embedding: list):
     Store or update user's identity vector.
     UPSERT = insert if not exists, update if exists.
     User might re-register their face with better selfies.
+    Also flips active back to true — re-registering after a DELETE
+    /me/face is an explicit opt back in.
     """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO user_face_embeddings (user_id, embedding)
-                VALUES (%s, %s)
+                INSERT INTO user_face_embeddings (user_id, embedding, active)
+                VALUES (%s, %s, true)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     embedding = EXCLUDED.embedding,
+                    active = true,
                     created_at = now()
                 """,
                 (user_id, embedding)
@@ -123,9 +126,13 @@ def search_faces(user_id: str, thread_id: str, threshold: float = 0.45, limit: i
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             
-            # First get the user's stored embedding
+            # First get the user's stored embedding — active = true excludes
+            # users who've deleted their face registration (see
+            # user_face_embeddings.active in schema.sql). Same ValueError as
+            # "never registered" — deactivated is indistinguishable from
+            # unregistered from the search endpoint's point of view.
             cur.execute(
-                "SELECT embedding FROM user_face_embeddings WHERE user_id = %s",
+                "SELECT embedding FROM user_face_embeddings WHERE user_id = %s AND active = true",
                 (user_id,)
             )
             row = cur.fetchone()

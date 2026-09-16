@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateUUID } from '../middleware/validate.js';
 import threadRoutes from './threads.js';
 
 const router = Router();
@@ -111,7 +112,7 @@ router.get('/:slug', async (req, res, next) => {
     }
 });
 
-router.post('/:id/join', authenticate, async (req, res, next) => {
+router.post('/:id/join', authenticate, validateUUID('id'), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user.id;
