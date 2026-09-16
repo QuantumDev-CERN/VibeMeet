@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { use, useEffect, useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/components/AuthProvider';
 import * as api from '@/lib/api';
@@ -15,7 +15,8 @@ function formatDate(dateStr) {
 }
 
 export default function ThreadPage({ params }) {
-  const { slug, threadId } = params;
+  // Next 16: params is a Promise in client components — must unwrap with use().
+  const { slug, threadId } = use(params);
   const { user, token, ready } = useAuth();
 
   const [community, setCommunity] = useState(null);

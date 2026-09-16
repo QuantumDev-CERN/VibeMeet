@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/components/AuthProvider';
 import * as api from '@/lib/api';
@@ -8,7 +8,9 @@ import ThreadRow from '@/components/ThreadRow';
 import EmptyState from '@/components/EmptyState';
 
 export default function CommunityPage({ params }) {
-  const { slug } = params;
+  // Next 16: params is a Promise in client components — must unwrap with use(),
+  // not destructured directly, or every field reads as undefined.
+  const { slug } = use(params);
   const { user, token, ready } = useAuth();
 
   const [community, setCommunity] = useState(null);
