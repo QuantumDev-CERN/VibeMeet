@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/components/AuthProvider';
 import * as api from '@/lib/api';
 
 export default function NewThreadPage({ params }) {
-  const { slug } = params;
+  // Next 16: params is a Promise in client components — must unwrap with use().
+  const { slug } = use(params);
   const { user, token, ready } = useAuth();
   const router = useRouter();
 
