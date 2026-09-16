@@ -1,6 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import dotenv from 'dotenv';
+import cors from 'cors';
 
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
@@ -12,6 +13,14 @@ import searchRoutes from './routes/search.js';
 dotenv.config();
 
 const app = express();
+
+// Browser clients (the Next.js frontend on :3000) are a cross-origin caller
+// from the API's point of view — without this, every request the browser
+// makes gets silently blocked client-side, even though the server itself
+// is completely healthy.
+app.use(cors({
+  origin: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
+}));
 
 app.use(express.json());
 
