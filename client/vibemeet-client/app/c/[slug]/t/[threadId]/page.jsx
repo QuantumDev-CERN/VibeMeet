@@ -23,6 +23,7 @@ export default function ThreadPage({ params }) {
   const [thread, setThread] = useState(null);
   const [photos, setPhotos] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [photoError, setPhotoError] = useState('');
 
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -34,11 +35,13 @@ export default function ThreadPage({ params }) {
   const [joinLoading, setJoinLoading] = useState(false);
 
   const loadPhotos = useCallback(() => {
-    api
-      .listThreadPhotos(threadId)
+    if (!ready) return;
+    if (!token) { setPhotos(null); setPhotoError('login'); return; }
+    setPhotoError('');
+    api.listThreadPhotos(threadId, token)
       .then((data) => setPhotos(data.photos))
-      .catch((err) => setLoadError(err.message));
-  }, [threadId]);
+      .catch((err) => setPhotoError(err.message));
+  }, [threadId, token, ready]);
 
   useEffect(() => {
     let cancelled = false;

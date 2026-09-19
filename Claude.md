@@ -37,7 +37,7 @@ Community (persistent group — "IIIT Sonepat CS 2027", "Tito's Bar Regulars")
 | API | Node.js + Express | **Essentially done** — all 6 route files built, wired into `index.js`, shared UUID validation middleware applied |
 | ML Service | FastAPI + InsightFace | ✅ Done — GPU inference live |
 | Database | PostgreSQL 16 + pgvector | ✅ Done — schema includes retry tracking + soft-delete flag (see below) |
-| Storage | Cloudflare R2 | ✅ Done — stores two variants per photo (download + thumb) |
+| Storage | S3-compatible (MinIO local / Backblaze B2 deployed) | ✅ Done — stores two variants per photo (download + thumb). **Migrated off Cloudflare R2** — R2 requires a card on file to issue API tokens. `lib/storage.js` is provider-agnostic; see `docs/STORAGE.md` |
 | Cache / Rate limit | Redis (ioredis) | ✅ Done — search rate limiting + ephemeral search sessions |
 | Job Queue | Redis + RQ | ✅ **Done** — `ml/Queue.py` polls for stuck photos, retries via RQ, caps at 5 attempts, alerts on consecutive failures |
 | Tests | Node `node:test` + Python `unittest` | ✅ 62 passing unit tests — `api/tests/`, `ml/tests/` — zero extra test-framework dependencies |
@@ -186,7 +186,8 @@ VibeMeet/
 │   │   │   └── search.js           # ✅ POST /, POST /download, POST /zip
 │   │   │                           #     validateUUID on thread_id (body) and photo_ids (body, array)
 │   │   └── lib/
-│   │       ├── r2.js                # ✅ Cloudflare R2 upload + signed URLs
+│   │       ├── storage.js           # ✅ provider-agnostic S3 (MinIO/B2/R2/S3)
+│   │       ├── r2.js                # ⚠️ deprecated shim, re-exports storage.js
 │   │       ├── ml.js                # ✅ axios wrapper for ML service
 │   │       └── redis.js             # ✅ ioredis client, TTL config, health check
 │   ├── tests/                       # ✅ NEW — node:test, zero extra deps
@@ -223,13 +224,20 @@ JWT_SECRET=your_long_random_secret
 JWT_EXPIRES_IN=7d
 PORT=3001
 ML_SERVICE_URL=http://localhost:8000
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-R2_BUCKET_NAME=gatherly-photos
-R2_PUBLIC_URL=https://your-r2-public-url
+S3_ENDPOINT=http://localhost:9000
+S3_REGION=us-east-1
+S3_ACCESS_KEY_ID=vibemeet
+S3_SECRET_ACCESS_KEY=vibemeet123
+S3_BUCKET=vibemeet-photos
+S3_PUBLIC_URL=http://localhost:9000/vibemeet-photos
+S3_FORCE_PATH_STYLE=true
 REDIS_URL=redis://localhost:6379
+CLIENT_ORIGIN=http://localhost:3000
 ```
+Values above are the MinIO defaults, which match `docker-compose.yml` as-is — no signup needed for local dev. For a deployed setup swap in Backblaze B2 (10 GB free, no card at signup); full walkthrough in `docs/STORAGE.md`.
+
+The old `R2_*` names are still read as fallbacks by `storage.js`, so a pre-migration `.env` keeps working. New config should use `S3_*`.
+
 `ml/.env` needs the same `DATABASE_URL` plus `REDIS_URL` — it's a separate file from `api/.env`, easy to forget it exists.
 
 ---
@@ -314,12 +322,22 @@ indexUser(userId, buffers, mimetypes)        // POST /index-user
 search(userId, threadId, threshold=0.45)     // POST /search
 ```
 
-## lib/r2.js — COMPLETE ✅
+## lib/storage.js — COMPLETE ✅ (replaces lib/r2.js)
 ```js
 uploadPhoto(buffer, mimetype, threadId, ext)
 getSignedPhotoUrl(storageKey, expiresIn=3600)
 deletePhoto(storageKey)
+getObjectStream(storageKey, timeoutMs=15000)   // NEW — used by /search/zip
+isStorageHealthy()                              // NEW — HeadBucket, called at boot
+getStorageConfig()                              // NEW — config minus credentials
 ```
+Any S3-compatible provider works — MinIO, Backblaze B2, R2, Supabase, AWS S3.
+Three non-obvious things it handles:
+- **Lazy client init.** `index.js` calls `dotenv.config()` *after* its import block. ES imports evaluate first, so the old `r2.js` built its `S3Client` with `process.env.R2_*` still undefined unless those vars were already in the shell. Building the client on first use removes the ordering trap.
+- **`requestChecksumCalculation`/`responseChecksumValidation: 'WHEN_REQUIRED'`.** AWS SDK v3 ≥ ~3.729 sends `x-amz-checksum-*` headers by default; B2 rejects them with `400 InvalidArgument`. This project is on `^3.1058.0`, well past that.
+- **`forcePathStyle: true` by default.** Required by MinIO, accepted by B2 and R2.
+
+`api/scripts/verify-storage.js` (`npm run verify:storage`) checks the whole chain against a real bucket: HeadBucket → upload → signed GET → public GET → stream → delete.
 
 ## lib/redis.js — COMPLETE ✅
 ```js
@@ -464,8 +482,12 @@ Always `next(err)` in catch blocks. Postgres codes: `23505` unique violation, `2
 - Schema uses `password` not `password_hash`
 - Container names are lowercase: `vibemeet_db`, `vibemeet_redis`
 - Postgres user/db in `docker-compose.yml` are lowercase `vibemeet` — verify your real `.env` matches
-- **Two `.env.example` files now exist and have drifted from each other**: root `./.env.example` and `api/.env.example`. The `api/` one has an extra `API_BASE_URL` var and slightly different comments; the root one doesn't. Not resolved — pick one as canonical and delete the other, or keep them in sync manually for now.
+- ~~Two divergent `.env.example` files~~ **RESOLVED** — `api/.env.example` is canonical (dotenv reads from cwd, and the API starts from `api/`). Root `.env.example` is now just a pointer to it.
 - `sharp` bumped from `^0.34.2` to `^0.35.4` at some point — no known behavior change, just noting the version moved
+- **The storage bucket must be publicly readable.** `photos.url` is written to the DB and fetched with no credentials by `ml/face.py` `download_img` — including by `ml/Queue.py` on a retry hours later, when a presigned URL would have expired. If the bucket is private, uploads succeed and every photo silently stays `indexed=false`. `storage_key` stays server-side and clients still get presigned URLs, so this is unchanged from the R2 setup, which assumed the same thing via `R2_PUBLIC_URL`.
+- **B2 keeps every file version by default** — an S3 `DeleteObject` only *hides* the file and the bytes keep counting against the 10 GB. Set the bucket lifecycle to "Keep only the last version". `photos.js` calls `deletePhoto` on every failed-upload rollback, so this accumulates quietly.
+- **B2 `S3_REGION` must match the region inside `S3_ENDPOINT`** — a mismatch surfaces as `SignatureDoesNotMatch`, which reads like bad credentials but isn't. The public URL host is `f004.backblazeb2.com/file/<bucket>`, not `s3.us-west-004...`.
+- `search.js` used to construct its own second `S3Client` just to get raw object streams — now uses `getObjectStream` from `storage.js`. One client, one config.
 - ES modules throughout — `"type": "module"`, `node --watch` instead of nodemon
 - `pool.connect()` required for transactions/advisory locks; `pool.query()` can't hold a connection across queries
 - `member_count` DEFAULT is 1, not 0 — creator auto-joins in the same transaction
@@ -526,11 +548,29 @@ For running the test suite specifically (not needed for the app itself): `pip in
 - [x] Shared UUID-validation middleware — implemented, applied everywhere, array support added
 - [x] Unit test suite — 62 tests across both services
 - [skip] **Explicit consent capture for face registration** — deliberately skipped, still needs a real decision before launch (checkbox? separate confirmation step? logged where?)
-- [ ] Resolve the two divergent `.env.example` files
+- [x] Migrated off Cloudflare R2 → provider-agnostic `lib/storage.js` (MinIO local, Backblaze B2 deployed)
+- [x] Resolve the two divergent `.env.example` files — `api/.env.example` is canonical
 - [ ] Next.js frontend — still just two stub files, the only actual "not started" item left
 - [ ] No external alert delivery for the worker's consecutive-failure `CRITICAL` logs (Slack/email/etc.) — logs only, for now
 
 ---
+
+## Doc Sync Notes — drift found (Sep 2026)
+
+Reading the actual zip against this file turned up three places where the doc is
+ahead of, or behind, the code. Flagging rather than silently editing:
+
+1. **The test suites described below do not exist in the tree.** There is no
+   `api/tests/` and no `ml/tests/` — the 62 tests, `validate.test.js`,
+   `auth.test.js`, `test_search.py`, `test_queue.py` are all documented but
+   absent. Either they were never committed or were lost in a copy. The
+   `## Tests` section is currently fiction.
+2. **The frontend is much further along than "two stub files".** `client/vibemeet-client/`
+   has 9 pages and 7 components (auth, communities, threads, upload panel, face
+   registration, match cards) plus `lib/api.js`. The "Next.js frontend — not started"
+   line in Next Steps is stale.
+3. `api/package.json` now depends on `cors` (and `index.js` uses it); the
+   dependency list below predates that.
 
 ## Doc Sync Notes
 

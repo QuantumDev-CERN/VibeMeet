@@ -56,6 +56,52 @@ services:
       retries: 5
       start_period: 5s
 
+  minio:
+    image: quay.io/minio/minio:latest
+    # S3-compatible object storage, self-hosted. Zero signup, zero card, and it
+    # speaks the same API as Backblaze B2 / R2 / S3 — so the same lib/storage.js
+    # code path runs locally and in production with only .env differing.
+    container_name: vibemeet_minio
+    environment:
+      MINIO_ROOT_USER: vibemeet
+      MINIO_ROOT_PASSWORD: vibemeet123
+      # 8+ chars required by MinIO, hence the 123
+    ports:
+      - "9000:9000"   # S3 API   → this is S3_ENDPOINT
+      - "9001:9001"   # web console at http://localhost:9001
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio_init:
+    image: quay.io/minio/mc:latest
+    # One-shot bootstrap: creates the bucket and makes it anonymously readable,
+    # then exits. Without this you'd have to click through the console before
+    # the first upload works.
+    #
+    # Anonymous download is required because photos.url is written into the DB
+    # and later fetched by the ML service (face.py download_img) — including by
+    # ml/Queue.py hours later on a retry, when a signed URL would have expired.
+    # Same public-bucket assumption the R2 setup already made via R2_PUBLIC_URL.
+    container_name: vibemeet_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vibemeet vibemeet123 &&
+      mc mb --ignore-existing local/vibemeet-photos &&
+      mc anonymous set download local/vibemeet-photos &&
+      echo 'MinIO bucket vibemeet-photos ready'
+      "
+    restart: "no"
+
 volumes:
   postgres_data:
     # named volume — data persists when container stops or restarts
@@ -64,3 +110,6 @@ volumes:
   redis_data:
     # same — persists AOF log across restarts
     # docker-compose down -v wipes this too — rate limits and search sessions reset
+  minio_data:
+    # uploaded photos. docker-compose down -v wipes these — the DB rows will
+    # survive and point at objects that no longer exist, so wipe both together.

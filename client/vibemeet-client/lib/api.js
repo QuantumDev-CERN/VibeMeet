@@ -124,8 +124,8 @@ export function createThread(token, communityId, { title, description, event_dat
 }
 
 // ── Photos ───────────────────────────────────────────────────────────────────
-export function listThreadPhotos(threadId) {
-  return request(`/api/photos/thread/${threadId}`);
+export function listThreadPhotos(threadId, token) {
+  return request(`/api/photos/thread/${threadId}`, { token });
 }
 
 export function uploadPhoto(token, threadId, file) {

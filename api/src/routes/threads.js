@@ -2,6 +2,7 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
+import { deletePhoto } from '../lib/r2.js';
 
 const router = Router({ mergeParams: true});
 
@@ -61,6 +62,50 @@ router.get('/:id', validateUUID('id'), async(req, res, next) => {
         res.json({thread: result.rows[0]});
 
 
+    } catch (err) {
+        next(err);
+    }
+});
+
+// DELETE /api/threads/:id  (also reachable as /api/communities/:communityId/threads/:id
+// via the mergeParams mount in communities.js — same router, same handler)
+// Only the thread's creator may delete it. photos -> face_embeddings ->
+// photo_faces cascade in the DB automatically; we only need to clean up
+// the storage objects ourselves before the photo rows disappear.
+router.delete('/:id', authenticate, validateUUID('id'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const threadResult = await pool.query(
+            `SELECT id, created_by FROM threads WHERE id = $1`,
+            [id]
+        );
+        if (threadResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Thread not found' });
+        }
+        if (threadResult.rows[0].created_by !== userId) {
+            return res.status(403).json({ error: 'Only the thread creator can delete this thread' });
+        }
+
+        const photosResult = await pool.query(
+            `SELECT storage_key, storage_key_thumb FROM photos WHERE thread_id = $1`,
+            [id]
+        );
+
+        await pool.query(`DELETE FROM threads WHERE id = $1`, [id]);
+
+        const cleanup = photosResult.rows.flatMap((p) => [
+            deletePhoto(p.storage_key).catch((e) =>
+                console.error(`[R2] cleanup failed for key ${p.storage_key}: ${e.message}`)
+            ),
+            deletePhoto(p.storage_key_thumb).catch((e) =>
+                console.error(`[R2] cleanup failed for key ${p.storage_key_thumb}: ${e.message}`)
+            ),
+        ]);
+        await Promise.all(cleanup);
+
+        res.json({ message: 'Thread deleted' });
     } catch (err) {
         next(err);
     }

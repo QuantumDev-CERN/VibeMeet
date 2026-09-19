@@ -4,7 +4,7 @@ import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
 import { indexUser } from '../lib/ml.js';
-import { getSignedPhotoUrl } from '../lib/r2.js';
+import { getSignedPhotoUrl } from '../lib/storage.js';
 
 const router = Router();
 

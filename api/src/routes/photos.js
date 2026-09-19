@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
-import { uploadPhoto, deletePhoto, getSignedPhotoUrl } from '../lib/r2.js';
+import { uploadPhoto, deletePhoto, getSignedPhotoUrl } from '../lib/storage.js';
 import { processPhoto } from '../lib/ml.js';
 
 const router = Router();
@@ -237,9 +237,31 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
 // Thumbnails: 5 min TTL — for UI preview only.
 // Downloads: 1 hour TTL — for actual file saving.
 // storage_key and storage_key_thumb are never returned to the client.
-router.get('/thread/:threadId', validateUUID('threadId'), async (req, res, next) => {
+router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (req, res, next) => {
     try {
         const { threadId } = req.params;
+        const userId = req.user.id;
+
+        // ── Thread existence + community membership check ──────────────
+        // Same pattern as POST /api/search: fetch community_id, then
+        // verify membership before returning anything.
+        const threadResult = await pool.query(
+            `SELECT id, community_id FROM threads WHERE id = $1`,
+            [threadId]
+        );
+        if (threadResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Thread not found' });
+        }
+        const thread = threadResult.rows[0];
+
+        const memberResult = await pool.query(
+            `SELECT user_id FROM community_members
+             WHERE community_id = $1 AND user_id = $2`,
+            [thread.community_id, userId]
+        );
+        if (memberResult.rows.length === 0) {
+            return res.status(403).json({ error: 'You are not a member of this community' });
+        }
 
         const result = await pool.query(
             `SELECT id, thread_id, uploaded_by, storage_key, storage_key_thumb,

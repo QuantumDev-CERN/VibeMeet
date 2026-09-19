@@ -1,26 +1,14 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import archiver from 'archiver';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
 import { search as mlSearch } from '../lib/ml.js';
-import { getSignedPhotoUrl } from '../lib/r2.js';
+// getObjectStream replaces the second S3Client this file used to build for
+// itself. One client, one config, in lib/storage.js.
+import { getSignedPhotoUrl, getObjectStream } from '../lib/storage.js';
 import redis, { isRedisHealthy, TTL, SEARCH_RATE_LIMIT } from '../lib/redis.js';
-
-// We need the raw S3 client to stream objects — r2.js doesn't export it.
-// Import separately so r2.js stays focused on its own responsibilities.
-import { S3Client } from '@aws-sdk/client-s3';
-
-const r2Stream = new S3Client({
-    region: 'auto',
-    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-        accessKeyId:     process.env.R2_ACCESS_KEY_ID,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    },
-});
 
 const router = Router();
 
@@ -60,33 +48,8 @@ async function checkRateLimit(userId) {
     return { allowed: true, retryAfter: 0 };
 }
 
-// Fetch an object from R2 as a readable stream with a timeout.
-// If the stream doesn't start within timeoutMs, rejects with a timeout error.
-// Used by the zip endpoint to stream photos directly into archiver.
-async function getR2Stream(storageKey, timeoutMs = 15000) {
-    const command = new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: storageKey,
-    });
-
-    const response = await r2Stream.send(command);
-
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error(`R2 stream timeout for key: ${storageKey}`));
-        }, timeoutMs);
-
-        response.Body.once('readable', () => {
-            clearTimeout(timeout);
-            resolve(response.Body);
-        });
-
-        response.Body.once('error', (err) => {
-            clearTimeout(timeout);
-            reject(err);
-        });
-    });
-}
+// Object streaming for the zip endpoint now lives in lib/storage.js as
+// getObjectStream(storageKey, timeoutMs) — same behaviour, shared client.
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -177,7 +140,24 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         // Write to DB first — if Redis write fails after this, the user's
         // profile still shows the photos. Better failure mode than the reverse.
         // ON CONFLICT: re-searching the same thread updates confidence and bbox.
-        const photoFacesValues = mlResult.matches.map(m => [
+        //
+        // De-dupe by photo_id first: ML returns one row per detected FACE, not
+        // per photo (face_embeddings has one row per face). If a photo has two
+        // faces that both match this user above threshold — two crops of the
+        // same person, a reflection, a near-duplicate embedding — mlResult.matches
+        // contains two rows with the same photo_id. A single multi-row INSERT
+        // can't ON CONFLICT DO UPDATE the same (photo_id, user_id) target twice,
+        // so Postgres throws "ON CONFLICT DO UPDATE command cannot affect row a
+        // second time". Keep only the highest-similarity match per photo.
+        const bestMatchPerPhoto = new Map();
+        for (const m of mlResult.matches) {
+            const existing = bestMatchPerPhoto.get(m.photo_id);
+            if (!existing || m.similarity > existing.similarity) {
+                bestMatchPerPhoto.set(m.photo_id, m);
+            }
+        }
+
+        const photoFacesValues = [...bestMatchPerPhoto.values()].map(m => [
             m.photo_id,
             userId,
             m.similarity,
@@ -205,13 +185,16 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
 
         // ── Store in Redis (ephemeral) ────────────────────────────────────────
         // Opaque UUID key — client cannot guess other users' search results.
-        // Stores photo_id, similarity, bbox per match.
-        // storage_key is NOT stored in Redis — fetched fresh from DB at download time.
+        // Stores photo_id, similarity, bbox per match — deduped to one row per
+        // photo (same bestMatchPerPhoto used for the photo_faces upsert above),
+        // so "total" reflects distinct photos, not raw face-detection rows.
+        const dedupedMatches = [...bestMatchPerPhoto.values()];
+
         const searchKey = randomUUID();
         const redisPayload = JSON.stringify({
             user_id:   userId,
             thread_id,
-            matches:   mlResult.matches, // [{ photo_id, similarity, bbox }]
+            matches:   dedupedMatches, // [{ photo_id, similarity, bbox }]
         });
 
         await redis.set(
@@ -224,8 +207,8 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         // ── Response — metadata only, no URLs ────────────────────────────────
         res.json({
             search_key: searchKey,
-            matches:    mlResult.matches,  // [{ photo_id, similarity, bbox }]
-            total:      mlResult.total,
+            matches:    dedupedMatches,       // [{ photo_id, similarity, bbox }]
+            total:      dedupedMatches.length, // distinct photos, not raw face rows
             thread_id,
         });
 
@@ -401,7 +384,7 @@ router.post('/zip', authenticate, async (req, res, next) => {
             }
 
             try {
-                const stream = await getR2Stream(photo.storage_key, 15000);
+                const stream = await getObjectStream(photo.storage_key, 15000);
                 // Filename in zip: {photoId}.jpg — unique, no collisions
                 archive.append(stream, { name: `${photoId}.jpg` });
                 // Wait for this entry to finish before fetching the next

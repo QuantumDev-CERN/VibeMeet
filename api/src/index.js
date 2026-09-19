@@ -9,6 +9,7 @@ import communityRoutes from './routes/communities.js';
 import threadRoutes from './routes/threads.js';
 import photoRoutes from './routes/photos.js';
 import searchRoutes from './routes/search.js';
+import { isStorageHealthy } from './lib/storage.js';
 
 dotenv.config();
 
@@ -58,4 +59,19 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+
+app.listen(PORT, async () => {
+    console.log(`API running on port ${PORT}`);
+
+    // Storage is the one dependency whose failure mode is invisible until a
+    // user actually uploads — Postgres and Redis both fail loudly on their own.
+    // HEAD the bucket once at boot so bad credentials surface here.
+    // Warn, don't exit: the API still serves reads if the bucket is unreachable.
+    const storage = await isStorageHealthy();
+    if (storage.healthy) {
+        console.log(`Storage OK — bucket "${storage.bucket}" at ${storage.endpoint}`);
+    } else {
+        console.warn(`Storage UNHEALTHY — uploads will fail: ${storage.error}`);
+        console.warn('See docs/STORAGE.md for Backblaze B2 / MinIO setup.');
+    }
+});

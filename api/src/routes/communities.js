@@ -2,6 +2,7 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
+import { deletePhoto } from '../lib/r2.js';
 import threadRoutes from './threads.js';
 
 const router = Router();
@@ -140,6 +141,59 @@ router.post('/:id/join', authenticate, validateUUID('id'), async (req, res, next
 
         res.json({message: 'Joined successfully'});
     } catch(err) {
+        next(err);
+    }
+});
+
+// DELETE /api/communities/:id
+// Only the community's creator may delete it. Deleting a community
+// cascades in the DB (communities -> threads -> photos ->
+// face_embeddings/photo_faces are all ON DELETE CASCADE in schema.sql),
+// so the single DELETE below handles every row. The one thing Postgres
+// can't clean up for us is the actual objects sitting in R2/B2/MinIO —
+// storage_key/storage_key_thumb are just strings to the DB — so we fetch
+// them first and delete the objects after the DB row is gone.
+router.delete('/:id', authenticate, validateUUID('id'), async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const communityResult = await pool.query(
+            `SELECT id, created_by FROM communities WHERE id = $1`,
+            [id]
+        );
+        if (communityResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Community not found' });
+        }
+        if (communityResult.rows[0].created_by !== userId) {
+            return res.status(403).json({ error: 'Only the community creator can delete this community' });
+        }
+
+        // Grab every photo's storage keys across every thread in this
+        // community before the cascade deletes the rows out from under us.
+        const photosResult = await pool.query(
+            `SELECT p.storage_key, p.storage_key_thumb
+             FROM photos p
+             JOIN threads t ON t.id = p.thread_id
+             WHERE t.community_id = $1`,
+            [id]
+        );
+
+        await pool.query(`DELETE FROM communities WHERE id = $1`, [id]);
+
+        // Best-effort object cleanup — DB is already consistent regardless.
+        const cleanup = photosResult.rows.flatMap((p) => [
+            deletePhoto(p.storage_key).catch((e) =>
+                console.error(`[R2] cleanup failed for key ${p.storage_key}: ${e.message}`)
+            ),
+            deletePhoto(p.storage_key_thumb).catch((e) =>
+                console.error(`[R2] cleanup failed for key ${p.storage_key_thumb}: ${e.message}`)
+            ),
+        ]);
+        await Promise.all(cleanup);
+
+        res.json({ message: 'Community deleted' });
+    } catch (err) {
         next(err);
     }
 });

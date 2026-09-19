@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "verify:storage": "node scripts/verify-storage.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1058.0",

@@ -1,57 +1,16 @@
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { randomUUID } from 'crypto';
-
-const r2  = new S3Client({
-    region: 'auto',
-    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY_ID,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    },
-});
-
-export async function uploadPhoto(buffer, mimetype, threadId, ext) {
-    // storage_key format : photos/{threadId}/{uuid}.{ext}
-    // ext passed explicitly from magic byte detection — never derived from mimetype here
-    // namespacing by threadId keeps R2 browsable and makes bulk deletes easy
-    const key = `photos/${threadId}/${randomUUID()}.${ext}`;
-
-    // handles large files automatically , single api for all sizes
-
-    const upload = new Upload({
-        client: r2,
-        params: {
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: key,
-            Body: buffer,
-            ContentType: mimetype,
-
-        },
-    });
-
-    await upload.done();
-
-    const url = `${process.env.R2_PUBLIC_URL}/${key}`;
-
-    return { key, url};
-}
-
-
-export async function getSignedPhotoUrl(storageKey, expiresIn = 3600) {
-    const command = new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: storageKey,
-    });
-
-    return getSignedUrl(r2, command, { expiresIn });
-}
-
-export async function deletePhoto(storageKey){
-    await r2.send(new DeleteObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: storageKey,
-    }));
-}
+/**
+ * DEPRECATED — kept only so any straggling `import ... from '../lib/r2.js'`
+ * keeps resolving. All real logic moved to lib/storage.js when the project
+ * dropped the hard R2 dependency (R2 requires a card to issue API tokens).
+ *
+ * Import from './lib/storage.js' directly in new code. This file can be
+ * deleted once you've confirmed nothing references it.
+ */
+export {
+    uploadPhoto,
+    getSignedPhotoUrl,
+    deletePhoto,
+    getObjectStream,
+    isStorageHealthy,
+    getStorageConfig,
+} from './storage.js';

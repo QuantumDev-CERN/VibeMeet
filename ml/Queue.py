@@ -8,7 +8,9 @@ Two moving parts, run as two separate processes:
      poller only picks up photos that fell through (ML was down, R2 fetch
      failed, etc.) and are still indexed=false.
   2. An RQ worker (`rq worker photo-processing --url $REDIS_URL`) — pulls
-     jobs off the queue and actually runs them via process_photo_job().
+     jobs off the queue and actually runs them via process_photo_job(),
+     imported from jobs.py (see that file for why the job lives there
+     and not in this one).
 
 Why polling instead of Node enqueueing directly: keeps this entirely on
 the Python side, no changes to the existing upload path, and the poll
@@ -17,12 +19,10 @@ on a table that isn't huge).
 """
 import time
 import logging
-from datetime import datetime, timezone
 
 from rq import Queue
 from db import get_connection, get_redis
-from face import download_img, extract_faces
-from search import store_face_embeddings
+from jobs import process_photo_job, MAX_RETRIES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
@@ -30,94 +30,14 @@ log = logging.getLogger("worker")
 # ── Tuning ────────────────────────────────────────────────────────────────
 POLL_INTERVAL_SECONDS = 30      # how often the poller checks for stuck photos
 BATCH_SIZE = 20                 # max photos enqueued per poll pass
-MAX_RETRIES = 5                 # after this many failed attempts, stop retrying
-
-# Consecutive-failure alerting: if this many jobs in a row fail (regardless
-# of which photo), something systemic is probably broken (ML service down,
-# GPU driver issue, DB connection exhausted) rather than N unrelated bad
-# photos. We log a CRITICAL line so it's grep-able / hookable into whatever
-# alerting you wire up later (this repo has no external alerting yet).
-CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 5
-CONSECUTIVE_FAILURE_REDIS_KEY = "worker:consecutive_failures"
+# MAX_RETRIES now lives in jobs.py (imported above) so the poll query and
+# the job's own "giving up" log can never drift out of sync with each other.
 
 QUEUE_NAME = "photo-processing"
 
 
 def get_queue():
     return Queue(QUEUE_NAME, connection=get_redis())
-
-
-def _record_success():
-    # Reset the consecutive-failure streak on any success.
-    get_redis().set(CONSECUTIVE_FAILURE_REDIS_KEY, 0)
-
-
-def _record_failure():
-    r = get_redis()
-    count = r.incr(CONSECUTIVE_FAILURE_REDIS_KEY)
-    # Alert once per threshold crossed (5, 10, 15...) rather than every
-    # single failure once past the threshold — avoids log-spamming during
-    # a genuine outage while still re-alerting if it keeps going.
-    if count % CONSECUTIVE_FAILURE_ALERT_THRESHOLD == 0:
-        log.critical(
-            f"ALERT: {count} consecutive photo-processing failures. "
-            f"Check ML service health, R2 connectivity, and DB connection pool."
-        )
-    return count
-
-
-def process_photo_job(photo_id: str, thread_id: str, image_url: str):
-    """
-    RQ job body. Mirrors what main.py's /process-photo does, but runs
-    in-process (no HTTP round-trip to the FastAPI service, which would
-    otherwise be calling itself).
-
-    Deliberately does NOT re-raise on failure — retries are tracked via
-    our own retry_count column, not RQ's built-in failure/retry registry,
-    so those two mechanisms don't get out of sync with each other.
-    """
-    conn = get_connection()
-    try:
-        img = download_img(image_url)
-        faces = extract_faces(img)
-        store_face_embeddings(photo_id, thread_id, faces)
-        # store_face_embeddings sets indexed=true (and face_count, including
-        # the face_count=0 case) itself — just clear any stale error state.
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE photos SET retry_count = 0, last_error = NULL, "
-                "last_attempted_at = %s WHERE id = %s",
-                (datetime.now(timezone.utc), photo_id)
-            )
-        conn.commit()
-        log.info(f"Processed photo {photo_id} ({len(faces)} faces)")
-        _record_success()
-
-    except Exception as e:
-        log.error(f"Failed processing photo {photo_id}: {e}")
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE photos
-                    SET retry_count = retry_count + 1,
-                        last_error = %s,
-                        last_attempted_at = %s
-                    WHERE id = %s
-                    RETURNING retry_count
-                    """,
-                    (str(e)[:2000], datetime.now(timezone.utc), photo_id)
-                )
-                new_count = cur.fetchone()[0]
-            conn.commit()
-            if new_count >= MAX_RETRIES:
-                log.warning(f"Photo {photo_id} hit MAX_RETRIES ({MAX_RETRIES}) — giving up, won't be re-polled")
-        except Exception as db_err:
-            log.error(f"Also failed to record retry state for {photo_id}: {db_err}")
-        _record_failure()
-
-    finally:
-        conn.close()
 
 
 def poll_and_enqueue():
