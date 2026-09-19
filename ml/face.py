@@ -1,4 +1,3 @@
-"""Face embedding and InsightFace integration placeholder."""
 import insightface
 from insightface.app import FaceAnalysis
 import numpy as np 
@@ -6,7 +5,6 @@ import cv2
 import requests
 import os
 
-#Model loads on service start instead of each request . Performance Optimization
 _app=None
 
 def get_model():
@@ -14,24 +12,15 @@ def get_model():
     if _app is None:
         _app = FaceAnalysis(
             name='buffalo_l',
-            #Provider is cpu as i dont have gpu 😭 , if you have gpu use  onxruntime-gpu
-            #Switched to gpu , now i have rtx 5060 , much faster inference
             providers=['CUDAExecutionProvider']
         )
-        #ctx_id=0 means use GPU , ctx_id=-1 means cpu (InsightFace convention)
-        #det_size is the resolution detection size (640x640) but for bigger pic (1200x1200) in prod
-        _app.prepare(ctx_id=0, det_size=(640, 640))
+        _app.prepare(ctx_id=0, det_size=(640, 640))#{0:gpu,1:cpu}
     return _app
 
 
 def download_img(url: str) -> np.ndarray:
-    #Download image from R2 puts into np array 
-
     response = requests.get(url, timeout=30)
     response.raise_for_status()
-
-    #Convert raw bytes -> numpy array -> decoded image
-    #cv2.imdecode interprets it as an image file (handles JPEG ,PNG etc)
     img_array = np.frombuffer(response.content, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
@@ -40,25 +29,14 @@ def download_img(url: str) -> np.ndarray:
     return img 
 
 def extract_faces(img: np.ndarray , min_confidence: float = 0.5):
-    #Runs Recog+detect on img , returns list of dicts , one per face detected
-    #[{Facepoints},{..},{...}]
-
     model = get_model()
     faces = model.get(img)
-
     results = []
     for face in faces:
-        #Filter low confidence detection
-        # shadows , reflection , posters can trigger false detection
         if face.det_score < min_confidence:
-            continue
-        
+            continue        
         bbox = face.bbox.astype(int).tolist() # [x1,y1,x2,y2]
-
         results.append({
-            #normed_embedding is already L2-normalized , its magnitude is 1.0
-            #required for cosine similarity to work
-
             'embedding' : face.normed_embedding.tolist(),
             'bbox': {
                 'x1': bbox[0] , 'y1': bbox[1],
@@ -70,35 +48,20 @@ def extract_faces(img: np.ndarray , min_confidence: float = 0.5):
     return results
 
 def build_user_embedding(selfie_images: list[np.ndarray]) -> np.ndarray:
-    #Take multiple selfies under diff conditions, extract face from each, return a single averaged identity vector
-
     model = get_model()
     embeddings = []
-
     for img in selfie_images:
         faces = model.get(img)
-
         if not faces:
-            #No face detected in this selfie, skip it
             continue
-        #Take the largest face if multiple faces detected
-        #(user might be holding phone in crowd)
         largest = max(
             faces,
             key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
         )
-        
-        #Only use high confidence selfie detections
         if largest.det_score > 0.7:
             embeddings.append(largest.normed_embedding)
-
     if not embeddings:
         raise ValueError("No Valid face detected in any selfie")
-
-    # Average all the embeddings
     avg = np.mean(embeddings, axis=0)
-
-    #Renormalize it as averaging makes its magnitude <1.0 
     avg = avg / np.linalg.norm(avg)
-
     return avg
