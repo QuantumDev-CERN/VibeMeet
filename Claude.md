@@ -49,7 +49,7 @@ Community (persistent group — "IIIT Sonepat CS 2027", "Tito's Bar Regulars")
 - Machine: LOQ 10, Ryzen 7 250, 16GB DDR5, Nvidia RTX 5060, Fedora 43
 - **GPU inference is live** — `face.py` uses `CUDAExecutionProvider`. This is done, not pending.
 - Docker running postgres via `pgvector/pgvector:pg16`, plus a Redis container
-- Python venv active for ML service
+- ML service environment managed by **uv** — `ml/pyproject.toml` + `ml/uv.lock`, Python 3.12 pinned in `ml/.python-version`. No venv activation needed: use `uv run` (run from `ml/`)
 
 ---
 
@@ -73,8 +73,8 @@ Community (persistent group — "IIIT Sonepat CS 2027", "Tito's Bar Regulars")
 
 `ml/Queue.py` — two processes, run separately:
 
-1. **Poller** (`python Queue.py`) — every 30s, queries `photos WHERE indexed=false AND retry_count < 5`, enqueues each into RQ. Idempotent: checks `queue.fetch_job(photo_id)` first and skips anything already `queued`/`started`/`deferred`, so re-polling before a job finishes doesn't double-enqueue.
-2. **RQ worker** (`rq worker photo-processing --url $REDIS_URL`) — runs `process_photo_job`, which reuses `download_img`/`extract_faces`/`store_face_embeddings` **in-process** (no HTTP round-trip to the FastAPI service calling itself).
+1. **Poller** (`uv run python Queue.py`) — every 30s, queries `photos WHERE indexed=false AND retry_count < 5`, enqueues each into RQ. Idempotent: checks `queue.fetch_job(photo_id)` first and skips anything already `queued`/`started`/`deferred`, so re-polling before a job finishes doesn't double-enqueue.
+2. **RQ worker** (`uv run rq worker photo-processing --url $REDIS_URL`) — runs `process_photo_job`, which reuses `download_img`/`extract_faces`/`store_face_embeddings` **in-process** (no HTTP round-trip to the FastAPI service calling itself).
 
 Retry/failure handling:
 - On success: `retry_count`/`last_error` cleared, consecutive-failure Redis counter reset to 0.
@@ -206,7 +206,9 @@ VibeMeet/
 │   ├── tests/                       # ✅ NEW — unittest, zero extra deps
 │   │   ├── test_search.py           #     9 tests
 │   │   └── test_queue.py            #     17 tests — stubs insightface/cv2 so no heavy CV deps needed
-│   └── requirements.txt             # rq + redis now actually used, not just declared
+│   ├── pyproject.toml               # ✅ uv project — dependencies, dependency-groups (dev / gpu / cpu), uv settings
+│   ├── uv.lock                      # ✅ uv universal lockfile (commit it) — replaces requirements.txt
+│   └── .python-version              # ✅ pins Python 3.12 for uv
 ├── infra/
 │   └── schema.sql
 ├── docker-compose.yml                # postgres (pgvector) + redis, both with healthchecks
@@ -358,7 +360,7 @@ No test framework added as a dependency — deliberately used what's built in:
 - **Node:** `node:test` + `node:assert/strict` (Node 18+). Run: `node --test api/tests/*.test.js`
   - `api/tests/validate.test.js` (27) — every branch of `validateUUID`: params/body source, required/optional, array mode, `maxItems`, edge cases (empty string vs missing, case-insensitivity, wrong UUID version/variant nibbles)
   - `api/tests/auth.test.js` (9) — uses the **real** `jsonwebtoken` library (not mocked) to sign/verify tokens: valid token, missing header, wrong scheme, wrong secret, expired token, malformed token, a documented whitespace-parsing edge case
-- **Python:** `unittest` (stdlib). Run: `python3 -m unittest discover -s ml/tests -v`
+- **Python:** `unittest` (stdlib). Run: `uv run --project ml python -m unittest discover -s ml/tests -v`
   - `ml/tests/test_search.py` (9) — `store_face_embeddings` (zero-faces path, bulk insert path, error-reraise-and-still-closes-connection), `upsert_user_embedding` (active=true on upsert), `search_faces` (active=true filter, ValueError on no embedding, correct query params)
   - `ml/tests/test_queue.py` (17) — `process_photo_job` success/failure paths, retry increment, `MAX_RETRIES` boundary, error message truncation, connection-closed-even-on-secondary-failure; consecutive-failure Redis counter (reset on success, alert at threshold and at every subsequent multiple, no alert between multiples); `poll_and_enqueue` query correctness, job dedup via `fetch_job`, skip-if-already-queued/running
   - Stubs `insightface`/`cv2` as fake modules before import — `Queue.py` transitively imports `face.py`, which imports those heavy CV libraries just to load; tests shouldn't need them installed
@@ -526,14 +528,20 @@ Always `next(err)` in catch blocks. Postgres codes: `23505` unique violation, `2
 }
 ```
 
-### ml/requirements.txt (current)
+### ml/pyproject.toml (current)
+Managed with **uv**; `requirements.txt` was removed. `uv.lock` pins the full tree.
 ```
-fastapi, uvicorn, insightface==0.7.3, onnxruntime-gpu, opencv-python-headless,
-numpy, psycopg2-binary, python-multipart, pydantic, python-dotenv, rq, redis, requests
+dependencies:      fastapi, uvicorn, insightface==0.7.3, opencv-python-headless, numpy,
+                   psycopg2-binary, python-multipart, pydantic, python-dotenv, rq, redis, requests
+requires-python:   >=3.11,<3.13   (.python-version = 3.12; 3.10 unsupported — no onnxruntime cp310 wheels)
+dependency-groups: dev = [ruff]   gpu = [onnxruntime-gpu[cuda,cudnn]]   cpu = [onnxruntime]
 ```
+- `gpu` is installed by default (`default-groups = ["dev", "gpu"]`). `cpu` and `gpu` are declared as **conflicting**, so choose one: `uv sync --no-group gpu --group cpu` on a machine without an NVIDIA GPU.
+- CUDA: the `gpu` group uses `onnxruntime-gpu[cuda,cudnn]`, which installs the CUDA 13 + cuDNN 9 runtime libraries from PyPI into `ml/.venv` (~2 GB) — no system CUDA needed (this machine has none; driver 580 / CUDA 13.0). `face.py` calls `onnxruntime.preload_dlls()` at import so ONNX Runtime can find them.
+- `onnxruntime-gpu` 1.22–1.26 is built for CUDA 12, 1.27+ for CUDA 13. On a driver older than r580, use `"onnxruntime-gpu[cuda,cudnn]<1.27"` (CUDA 12 libs) and run `uv lock`.
 `rq`/`redis` are no longer just declared-but-unused — `ml/Queue.py` actually uses both now.
 
-For running the test suite specifically (not needed for the app itself): `pip install psycopg2-binary redis` if your venv doesn't already have them from the main requirements — `rq` is already there.
+Running the test suite needs no extra installs — `uv run` already provides `psycopg2-binary`, `redis` and `rq` from the main dependencies (the old `pip install psycopg2-binary redis` step is obsolete).
 
 ---
 

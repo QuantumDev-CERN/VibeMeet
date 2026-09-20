@@ -1,0 +1,40 @@
+[project]
+name = "vibemeet-ml"
+version = "0.1.0"
+description = "VibeMeet ML service: face embeddings, vector search and photo-processing jobs"
+# Tested on 3.11 and 3.12.
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "insightface==0.7.3",
+    "opencv-python-headless",
+    "numpy",
+    "psycopg2-binary",   # postgres + pgvector queries
+    "python-multipart",  # fastapi file uploads
+    "pydantic",
+    "python-dotenv",
+    "rq",                # job queue backed by redis
+    "redis",
+    "requests",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+]
+
+# Requires an NVIDIA driver that supports CUDA 13 (r580+).
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]",
+]
+cpu = [
+    "onnxruntime",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev", "gpu"]
+conflicts = [
+    [{ group = "cpu" }, { group = "gpu" }],
+]

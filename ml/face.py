@@ -4,6 +4,10 @@ import numpy as np
 import cv2
 import requests
 import os
+import onnxruntime
+
+# (onnxruntime-gpu[cuda,cudnn]). Harmless on CPU-only installs.
+onnxruntime.preload_dlls()
 
 _app=None
 
