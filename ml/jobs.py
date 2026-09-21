@@ -33,7 +33,7 @@ def process_photo_job(photo_id: str, thread_id: str, image_url: str):
             cur.execute(
                 "UPDATE photos SET retry_count = 0, last_error = NULL, "
                 "last_attempted_at = %s WHERE id = %s",
-                (datetime.now, photo_id)
+                (datetime.now(), photo_id)
             )
         conn.commit()
         log.info(f"Processed photo {photo_id} ({len(faces)} faces)")
@@ -52,7 +52,7 @@ def process_photo_job(photo_id: str, thread_id: str, image_url: str):
                     WHERE id = %s
                     RETURNING retry_count
                     """,
-                    (str(e)[:2000], datetime.now, photo_id)
+                    (str(e)[:2000], datetime.now(), photo_id)
                 )
                 new_count = cur.fetchone()[0]
             conn.commit()
