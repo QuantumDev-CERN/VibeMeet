@@ -15,17 +15,12 @@ dotenv.config();
 
 const app = express();
 
-// Browser clients (the Next.js frontend on :3000) are a cross-origin caller
-// from the API's point of view — without this, every request the browser
-// makes gets silently blocked client-side, even though the server itself
-// is completely healthy.
 app.use(cors({
   origin: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
 }));
 
 app.use(express.json());
 
-// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/communities', communityRoutes);
@@ -33,11 +28,6 @@ app.use('/api/threads', threadRoutes);
 app.use('/api/photos', photoRoutes);
 app.use('/api/search', searchRoutes);
 
-// Multer error handler — must come before the global error handler.
-// Multer throws MulterError with specific codes for file size violations,
-// unexpected field names, too many files etc.
-// Without this they fall through to the global handler and return a
-// confusing 500 instead of a clean 400.
 app.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         const messages = {
@@ -52,7 +42,6 @@ app.use((err, req, res, next) => {
     next(err);
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
@@ -63,10 +52,6 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
     console.log(`API running on port ${PORT}`);
 
-    // Storage is the one dependency whose failure mode is invisible until a
-    // user actually uploads — Postgres and Redis both fail loudly on their own.
-    // HEAD the bucket once at boot so bad credentials surface here.
-    // Warn, don't exit: the API still serves reads if the bucket is unreachable.
     const storage = await isStorageHealthy();
     if (storage.healthy) {
         console.log(`Storage OK — bucket "${storage.bucket}" at ${storage.endpoint}`);

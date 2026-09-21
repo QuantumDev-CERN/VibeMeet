@@ -2,7 +2,7 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
-import { deletePhoto } from '../lib/r2.js';
+import { deletePhoto } from '../lib/storage.js';
 
 const router = Router({ mergeParams: true});
 
@@ -67,11 +67,6 @@ router.get('/:id', validateUUID('id'), async(req, res, next) => {
     }
 });
 
-// DELETE /api/threads/:id  (also reachable as /api/communities/:communityId/threads/:id
-// via the mergeParams mount in communities.js — same router, same handler)
-// Only the thread's creator may delete it. photos -> face_embeddings ->
-// photo_faces cascade in the DB automatically; we only need to clean up
-// the storage objects ourselves before the photo rows disappear.
 router.delete('/:id', authenticate, validateUUID('id'), async (req, res, next) => {
     try {
         const { id } = req.params;

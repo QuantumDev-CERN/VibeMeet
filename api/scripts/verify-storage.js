@@ -1,16 +1,3 @@
-/**
- * verify-storage.js — end-to-end check of the object storage setup.
- *
- *   cd api && node scripts/verify-storage.js
- *
- * Exercises every operation the app actually performs, in order, against your
- * real bucket: bucket reachable → upload → signed GET → public GET → stream →
- * delete. Prints the specific fix for the failure modes that are easy to
- * misread (checksum headers, path style, non-public bucket).
- *
- * Creates and then removes a single ~1 KB object under photos/_verify/.
- */
-
 import dotenv from 'dotenv';
 import { Buffer } from 'node:buffer';
 
@@ -42,7 +29,6 @@ let failures = 0;
 
 console.log('\nVibeMeet storage verification\n');
 
-// ── 0. Config ────────────────────────────────────────────────────────────────
 let config;
 try {
     config = getStorageConfig();
@@ -57,7 +43,6 @@ try {
     process.exit(1);
 }
 
-// ── 1. Bucket reachable ──────────────────────────────────────────────────────
 const health = await isStorageHealthy();
 if (health.healthy) {
     pass('bucket reachable (HeadBucket)');
@@ -78,7 +63,6 @@ if (health.healthy) {
     process.exit(1);
 }
 
-// ── 2. Upload ────────────────────────────────────────────────────────────────
 let publicUrl = null;
 try {
     const result = await uploadPhoto(TINY_JPEG, 'image/jpeg', '_verify', 'jpg');
@@ -94,7 +78,6 @@ try {
     }
 }
 
-// ── 3. Signed GET — how the client actually fetches photos ───────────────────
 if (uploadedKey) {
     try {
         const signed = await getSignedPhotoUrl(uploadedKey, 120);
@@ -113,10 +96,6 @@ if (uploadedKey) {
     }
 }
 
-// ── 4. Public GET — how the ML service fetches photos ────────────────────────
-// photos.url is stored in the DB and read back by ml/face.py download_img,
-// including by ml/Queue.py on a retry hours later. It must be anonymously
-// readable, or every photo silently stays indexed=false.
 if (publicUrl) {
     try {
         const res = await fetch(publicUrl);
@@ -137,7 +116,6 @@ if (publicUrl) {
     }
 }
 
-// ── 5. Stream — how the zip endpoint reads photos ────────────────────────────
 if (uploadedKey) {
     try {
         const stream = await getObjectStream(uploadedKey, 10000);
@@ -155,7 +133,6 @@ if (uploadedKey) {
     }
 }
 
-// ── 6. Delete ────────────────────────────────────────────────────────────────
 if (uploadedKey) {
     try {
         await deletePhoto(uploadedKey);

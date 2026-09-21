@@ -16,21 +16,16 @@ const MAGIC_BYTES = {
     'image/webp': { offset: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
 };
 
-// Constraints
 const MAX_FILE_SIZE         = 10 * 1024 * 1024; // 10MB — raw upload before processing
 const FREE_TIER_LIMIT       = 30;
 const SIGNED_URL_CONCURRENCY = 10;
 
-// TTLs
 const THUMB_SIGNED_TTL    = 5 * 60;    // 5 min — thumbnails are for UI preview only
 const DOWNLOAD_SIGNED_TTL = 60 * 60;   // 1 hour — actual file downloads
 
-// Sharp processing settings
-// All outputs are JPEG regardless of input format (PNG/WebP → JPEG)
-// Download variant: what ML runs on, what users download
 const DOWNLOAD_WIDTH   = 2560;
 const DOWNLOAD_QUALITY = 88;
-// Thumb variant: UI preview only, never downloaded, never sent to ML
+
 const THUMB_WIDTH   = 400;
 const THUMB_QUALITY = 70;
 
@@ -44,9 +39,6 @@ function validateMagicBytes(buffer) {
     throw err;
 }
 
-// Process raw upload buffer into two JPEG variants using sharp.
-// Always outputs JPEG — normalises PNG/WebP inputs for consistent ML input.
-// withMetadata() strips GPS/EXIF data — never store location metadata.
 async function processImageVariants(buffer) {
     const [downloadBuffer, thumbBuffer] = await Promise.all([
         sharp(buffer)
@@ -76,8 +68,6 @@ const upload = multer({
     limits: { fileSize: MAX_FILE_SIZE },
 });
 
-// Controlled concurrency helper — runs async tasks over an array
-// with at most 'limit' running in parallel
 async function mapWithConcurrency(items, limit, asyncFn) {
     const results = [];
     let index = 0;
@@ -95,11 +85,7 @@ async function mapWithConcurrency(items, limit, asyncFn) {
 }
 
 
-// POST /api/photos
-// Accepts a single image upload, processes into two variants via sharp,
-// uploads both to R2, stores metadata in DB, fires ML async.
 router.post('/', authenticate, upload.single('file'), async (req, res, next) => {
-    // Track both storage keys for cleanup if anything fails after upload
     let storageKeyDownload = null;
     let storageKeyThumb    = null;
     let photoId            = null;
@@ -111,10 +97,8 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
         if (!thread_id) return res.status(400).json({ error: 'thread_id is required' });
         if (!req.file)  return res.status(400).json({ error: 'file is required' });
 
-        // Validate file type from binary content — not from Content-Type header
         const detectedMime = validateMagicBytes(req.file.buffer);
 
-        // Verify thread exists before doing any heavy work
         const threadResult = await pool.query(
             'SELECT id FROM threads WHERE id = $1',
             [thread_id]
@@ -123,8 +107,6 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
             return res.status(404).json({ error: 'Thread not found' });
         }
 
-        // Advisory lock — serialises uploads per user to prevent race conditions
-        // on the free tier count check
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
@@ -133,9 +115,6 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
                 [userId]
             );
 
-            // Atomically check free tier limit and reserve the row.
-            // INSERT with 'pending' placeholders — real keys set after R2 upload.
-            // Four pending columns: storage_key, url, storage_key_thumb, url_thumb
             const insertResult = await client.query(
                 `INSERT INTO photos (thread_id, uploaded_by, storage_key, url, storage_key_thumb, url_thumb)
                  SELECT $1, $2, 'pending', 'pending', 'pending', 'pending'
@@ -160,23 +139,15 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
             client.release();
         }
 
-        // Process raw buffer into download + thumb variants
-        // This happens after the DB row is reserved so we don't do heavy
-        // processing before confirming the user hasn't hit their limit
         let downloadBuffer, thumbBuffer;
         try {
             ({ downloadBuffer, thumbBuffer } = await processImageVariants(req.file.buffer));
         } catch (sharpErr) {
-            // Sharp failed — delete the reserved row and bail
             await pool.query('DELETE FROM photos WHERE id = $1', [photoId]);
             photoId = null;
             throw sharpErr;
         }
 
-        // Upload both variants to R2 in parallel.
-        // Both use image/jpeg — sharp always outputs JPEG regardless of input.
-        // Keys: photos/{threadId}/{uuid}_download.jpg and photos/{threadId}/{uuid}_thumb.jpg
-        // The UUID is embedded in the key by uploadPhoto — both calls generate separate UUIDs.
         let downloadResult, thumbResult;
         try {
             ([downloadResult, thumbResult] = await Promise.all([
@@ -186,13 +157,10 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
             storageKeyDownload = downloadResult.key;
             storageKeyThumb    = thumbResult.key;
         } catch (r2Err) {
-            // R2 upload failed — delete the reserved DB row
             await pool.query('DELETE FROM photos WHERE id = $1', [photoId]);
             photoId = null;
             throw r2Err;
         }
-
-        // Update placeholder row with real storage keys and URLs for both variants
         const finalResult = await pool.query(
             `UPDATE photos
              SET storage_key = $1, url = $2, storage_key_thumb = $3, url_thumb = $4
@@ -202,19 +170,12 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
         );
 
         const photo = finalResult.rows[0];
-
-        // Fire ML processing async — do not await.
-        // ML receives the download variant URL (2560px JPEG) — consistent input every time.
-        // If ML fails the photo stays with indexed=false and can be retried later.
         processPhoto(photo.id, thread_id, downloadResult.url).catch((err) => {
             console.error(`[ML] processing failed for photo ${photo.id}: ${err.message}`);
         });
-
-        // storage_key and storage_key_thumb are intentionally excluded from response
         res.status(201).json({ photo });
 
     } catch (err) {
-        // Clean up any R2 files that were uploaded before the failure
         const cleanup = [];
         if (storageKeyDownload) cleanup.push(
             deletePhoto(storageKeyDownload).catch(e =>
@@ -231,20 +192,11 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
     }
 });
 
-
-// GET /api/photos/thread/:threadId
-// Returns all photos in a thread with signed thumbnail and download URLs.
-// Thumbnails: 5 min TTL — for UI preview only.
-// Downloads: 1 hour TTL — for actual file saving.
-// storage_key and storage_key_thumb are never returned to the client.
 router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (req, res, next) => {
     try {
         const { threadId } = req.params;
         const userId = req.user.id;
 
-        // ── Thread existence + community membership check ──────────────
-        // Same pattern as POST /api/search: fetch community_id, then
-        // verify membership before returning anything.
         const threadResult = await pool.query(
             `SELECT id, community_id FROM threads WHERE id = $1`,
             [threadId]
@@ -296,22 +248,11 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
     }
 });
 
-
-// GET /api/photos/:photoId/download
-// Recovery endpoint — used when a photo was skipped during zip download.
-// Auth chain:
-//   1. Valid JWT
-//   2. Photo exists
-//   3. User appears in this photo (photo_faces record exists)
-//      — written at search time, this is the persistent record of ML confirmation
-// Returns a 1-hour signed download URL for the download variant.
-// storage_key is never returned.
 router.get('/:photoId/download', authenticate, validateUUID('photoId'), async (req, res, next) => {
     try {
         const { photoId } = req.params;
         const userId = req.user.id;
 
-        // Check photo exists and get storage_key in one query
         const photoResult = await pool.query(
             'SELECT id, storage_key FROM photos WHERE id = $1',
             [photoId]
@@ -320,9 +261,6 @@ router.get('/:photoId/download', authenticate, validateUUID('photoId'), async (r
             return res.status(404).json({ error: 'Photo not found' });
         }
 
-        // Verify user appears in this photo via photo_faces.
-        // This table is written at search time — if no row exists,
-        // either the user never searched this thread or they were not matched.
         const faceResult = await pool.query(
             'SELECT photo_id FROM photo_faces WHERE photo_id = $1 AND user_id = $2',
             [photoId, userId]

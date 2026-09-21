@@ -5,14 +5,11 @@ import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
 import { search as mlSearch } from '../lib/ml.js';
-// getObjectStream replaces the second S3Client this file used to build for
-// itself. One client, one config, in lib/storage.js.
 import { getSignedPhotoUrl, getObjectStream } from '../lib/storage.js';
 import redis, { isRedisHealthy, TTL, SEARCH_RATE_LIMIT } from '../lib/redis.js';
 
 const router = Router();
 
-// Controlled concurrency — same pattern as photos.js
 async function mapWithConcurrency(items, limit, asyncFn) {
     const results = [];
     let index = 0;
@@ -27,49 +24,28 @@ async function mapWithConcurrency(items, limit, asyncFn) {
     return results;
 }
 
-// Redis rate limit using atomic INCR pattern.
-// Returns { allowed: bool, retryAfter: seconds }
-// INCR is atomic — no race condition between check and increment.
 async function checkRateLimit(userId) {
     const key = `ratelimit:search:${userId}`;
     const count = await redis.incr(key);
 
     if (count === 1) {
-        // First request in this window — set expiry
         await redis.expire(key, TTL.RATE_LIMIT);
     }
 
     if (count > SEARCH_RATE_LIMIT) {
-        // Get remaining TTL so we can tell the client when to retry
         const ttl = await redis.ttl(key);
         return { allowed: false, retryAfter: ttl };
     }
-
     return { allowed: true, retryAfter: 0 };
 }
 
-// Object streaming for the zip endpoint now lives in lib/storage.js as
-// getObjectStream(storageKey, timeoutMs) — same behaviour, shared client.
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/search
-// Runs ML face search for the authenticated user in a thread.
-// Stores results in Redis (ephemeral) and photo_faces (permanent).
-// Returns metadata only — no URLs generated here.
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
             return res.status(503).json({ error: 'Search service temporarily unavailable' });
         }
-
         const { thread_id, threshold } = req.body;
         const userId = req.user.id;
-
-        // ── Thread existence check ────────────────────────────────────────────
-        // Also fetches community_id for the membership check below.
-        // One query instead of two — join gives us both in one round-trip.
         const threadResult = await pool.query(
             `SELECT t.id, t.community_id, t.title
              FROM threads t
@@ -81,10 +57,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         }
         const thread = threadResult.rows[0];
 
-        // ── Community membership check ────────────────────────────────────────
-        // User must be a member of the community that owns this thread.
-        // Non-members cannot run face searches — ML inference is expensive
-        // and this event's photos are private to its community.
         const memberResult = await pool.query(
             `SELECT user_id FROM community_members
              WHERE community_id = $1 AND user_id = $2`,
@@ -93,12 +65,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         if (memberResult.rows.length === 0) {
             return res.status(403).json({ error: 'You are not a member of this community' });
         }
-
-        // ── User embedding check ──────────────────────────────────────────────
-        // Check before hitting ML — saves a network round-trip and gives a
-        // cleaner error message than letting ML raise a ValueError.
-        // active = true — a deactivated registration (DELETE /me/face) reads
-        // as "not registered" here, same as ML's search_faces() filter.
         const embeddingResult = await pool.query(
             'SELECT id FROM user_face_embeddings WHERE user_id = $1 AND active = true',
             [userId]
@@ -108,11 +74,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
                 error: 'Face not registered. Submit selfies at POST /api/users/me/face first',
             });
         }
-
-        // ── Rate limit check ──────────────────────────────────────────────────
-        // 5 searches per 10 minutes per user, Redis-backed.
-        // Checked after all cheap DB validations — don't burn rate limit tokens
-        // on requests that would have failed anyway.
         const { allowed, retryAfter } = await checkRateLimit(userId);
         if (!allowed) {
             return res.status(429).json({
@@ -121,12 +82,8 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             });
         }
 
-        // ── ML search ─────────────────────────────────────────────────────────
-        // threshold defaults to 0.45 in ML if not provided.
-        // limit: 100 — cap results to prevent unbounded response at scale.
         const mlResult = await mlSearch(userId, thread_id, threshold);
 
-        // ── Early return — zero matches ───────────────────────────────────────
         if (mlResult.total === 0) {
             return res.json({
                 search_key: null,
@@ -136,19 +93,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             });
         }
 
-        // ── Persist to photo_faces (durable) ─────────────────────────────────
-        // Write to DB first — if Redis write fails after this, the user's
-        // profile still shows the photos. Better failure mode than the reverse.
-        // ON CONFLICT: re-searching the same thread updates confidence and bbox.
-        //
-        // De-dupe by photo_id first: ML returns one row per detected FACE, not
-        // per photo (face_embeddings has one row per face). If a photo has two
-        // faces that both match this user above threshold — two crops of the
-        // same person, a reflection, a near-duplicate embedding — mlResult.matches
-        // contains two rows with the same photo_id. A single multi-row INSERT
-        // can't ON CONFLICT DO UPDATE the same (photo_id, user_id) target twice,
-        // so Postgres throws "ON CONFLICT DO UPDATE command cannot affect row a
-        // second time". Keep only the highest-similarity match per photo.
         const bestMatchPerPhoto = new Map();
         for (const m of mlResult.matches) {
             const existing = bestMatchPerPhoto.get(m.photo_id);
@@ -164,7 +108,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             JSON.stringify(m.bbox),
         ]);
 
-        // Build parameterised bulk upsert — one query regardless of match count
         const placeholders = photoFacesValues.map((_, i) => {
             const base = i * 4;
             return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}::jsonb)`;
@@ -183,11 +126,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             flatValues
         );
 
-        // ── Store in Redis (ephemeral) ────────────────────────────────────────
-        // Opaque UUID key — client cannot guess other users' search results.
-        // Stores photo_id, similarity, bbox per match — deduped to one row per
-        // photo (same bestMatchPerPhoto used for the photo_faces upsert above),
-        // so "total" reflects distinct photos, not raw face-detection rows.
         const dedupedMatches = [...bestMatchPerPhoto.values()];
 
         const searchKey = randomUUID();
@@ -204,7 +142,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             TTL.SEARCH_RESULTS
         );
 
-        // ── Response — metadata only, no URLs ────────────────────────────────
         res.json({
             search_key: searchKey,
             matches:    dedupedMatches,       // [{ photo_id, similarity, bbox }]
@@ -213,8 +150,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         });
 
     } catch (err) {
-        // ML returns HTTP 400 when user has no embedding — shouldn't reach here
-        // because we check above, but defensive fallback.
         if (err.response?.status === 400) {
             return res.status(422).json({
                 error: err.response.data?.detail ?? 'Face search failed',
@@ -224,13 +159,6 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
     }
 });
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/search/download
-// Selective signed URL generation — client picks exactly which photos to download.
-// Verifies requested photo_ids against Redis search results for security.
-// Only generates signed URLs for explicitly requested photos.
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body', isArray: true }), async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
@@ -244,7 +172,6 @@ router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body
             return res.status(400).json({ error: 'search_key is required' });
         }
 
-        // ── Read search results from Redis ────────────────────────────────────
         const raw = await redis.get(`search:${search_key}`);
         if (!raw) {
             return res.status(410).json({
@@ -253,14 +180,9 @@ router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body
         }
 
         const session = JSON.parse(raw);
-
-        // ── Ownership check — user owns this search session ───────────────────
         if (session.user_id !== userId) {
             return res.status(403).json({ error: 'Forbidden' });
         }
-
-        // ── Verify every requested photo_id is in this search result ──────────
-        // Client cannot request photos that weren't returned by their own search.
         const validPhotoIds = new Set(session.matches.map(m => m.photo_id));
         const unauthorised = photo_ids.filter(id => !validPhotoIds.has(id));
         if (unauthorised.length > 0) {
@@ -268,10 +190,6 @@ router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body
                 error: 'One or more photo_ids are not part of this search result',
             });
         }
-
-        // ── Fetch storage_keys from DB ────────────────────────────────────────
-        // Scoped to both the requested photo_ids AND thread_id — double safety.
-        // storage_key fetched here, used for signing, never returned to client.
         const photoResult = await pool.query(
             `SELECT id, storage_key
              FROM photos
@@ -282,7 +200,6 @@ router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body
 
         const photoMap = Object.fromEntries(photoResult.rows.map(p => [p.id, p]));
 
-        // ── Generate signed download URLs with controlled concurrency ──────────
         const downloads = await mapWithConcurrency(photo_ids, 10, async (photoId) => {
             const photo = photoMap[photoId];
             if (!photo) return null; // photo deleted between search and download
@@ -298,14 +215,6 @@ router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body
     }
 });
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/search/zip
-// Streams all matched photos as a zip directly to the client.
-// No intermediate R2 storage — archiver pipes R2 reads straight to HTTP response.
-// Skipped photos (R2 timeout/failure) are listed in skipped.txt with recovery URLs.
-// Connection stays open until the last byte is sent.
-// ─────────────────────────────────────────────────────────────────────────────
 router.post('/zip', authenticate, async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
@@ -319,7 +228,6 @@ router.post('/zip', authenticate, async (req, res, next) => {
             return res.status(400).json({ error: 'search_key is required' });
         }
 
-        // ── Read search results from Redis ────────────────────────────────────
         const raw = await redis.get(`search:${search_key}`);
         if (!raw) {
             return res.status(410).json({
@@ -329,17 +237,12 @@ router.post('/zip', authenticate, async (req, res, next) => {
 
         const session = JSON.parse(raw);
 
-        // ── Ownership check ───────────────────────────────────────────────────
         if (session.user_id !== userId) {
             return res.status(403).json({ error: 'Forbidden' });
         }
 
-        // ── Extend Redis TTL before starting the download ─────────────────────
-        // Zip can take time — extend to 30 min so the session outlives the download.
         await redis.expire(`search:${search_key}`, TTL.SEARCH_ZIP);
 
-        // ── Fetch photo rows for all matched photo_ids ────────────────────────
-        // Deduplicate photo_ids — ML returns one row per face, not per photo.
         const uniquePhotoIds = [...new Set(session.matches.map(m => m.photo_id))];
 
         const photoResult = await pool.query(
@@ -356,39 +259,26 @@ router.post('/zip', authenticate, async (req, res, next) => {
 
         const photoMap = Object.fromEntries(photoResult.rows.map(p => [p.id, p]));
 
-        // ── Set response headers before streaming begins ──────────────────────
-        // Must be set before any data is written to the response.
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', 'attachment; filename="vibemeet-photos.zip"');
         res.setHeader('Transfer-Encoding', 'chunked');
 
-        // ── Set up archiver in store mode ─────────────────────────────────────
-        // Store mode = no compression on zip entries.
-        // JPEGs are already compressed — deflating them wastes CPU for near-zero gain.
         const archive = archiver('zip', { store: true });
         const skipped = []; // { photoId, reason }
 
-        // Pipe archiver output directly to HTTP response stream
         archive.pipe(res);
 
-        // ── Stream each photo from R2 into the archive ────────────────────────
-        // Sequential — not parallel — to keep memory flat.
-        // Parallel streaming would buffer multiple photos simultaneously.
         for (const photoId of uniquePhotoIds) {
             const photo = photoMap[photoId];
 
             if (!photo) {
-                // Photo was deleted between search and zip
                 skipped.push({ photoId, reason: 'Photo no longer exists' });
                 continue;
             }
 
             try {
                 const stream = await getObjectStream(photo.storage_key, 15000);
-                // Filename in zip: {photoId}.jpg — unique, no collisions
                 archive.append(stream, { name: `${photoId}.jpg` });
-                // Wait for this entry to finish before fetching the next
-                // This keeps memory flat — one photo in flight at a time
                 await new Promise((resolve, reject) => {
                     stream.once('end', resolve);
                     stream.once('error', reject);
@@ -399,12 +289,8 @@ router.post('/zip', authenticate, async (req, res, next) => {
             }
         }
 
-        // ── Add skipped.txt if any photos failed ──────────────────────────────
         if (skipped.length > 0) {
-            // Generate recovery URLs for skipped photos — 1 hour signed URLs
-            // pointing to the recovery endpoint on photos.js
             const recoveryBaseUrl = process.env.API_BASE_URL ?? 'http://localhost:3001';
-
             const skippedLines = await Promise.all(
                 skipped.map(async ({ photoId, reason }) => {
                     const photo = photoMap[photoId];
@@ -436,13 +322,9 @@ router.post('/zip', authenticate, async (req, res, next) => {
             archive.append(Buffer.from(skippedContent, 'utf-8'), { name: 'skipped.txt' });
         }
 
-        // ── Finalise archive — flushes and closes the response stream ──────────
         await archive.finalize();
 
     } catch (err) {
-        // Headers may already be sent if streaming started — can't send a JSON error.
-        // Log it and destroy the response so the client sees a broken download
-        // rather than a silent hang.
         if (res.headersSent) {
             console.error(`[ZIP] fatal error mid-stream: ${err.message}`);
             res.destroy(err);
