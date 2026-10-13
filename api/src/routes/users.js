@@ -68,6 +68,23 @@ router.get('/me', authenticate, async (req, res, next) => {
     }
 });
 
+router.get('/me/face', authenticate, async (req, res, next) => {
+    try {
+        const result = await pool.query(
+            `SELECT created_at
+             FROM user_face_embeddings
+             WHERE user_id = $1 AND active = true`,
+            [req.user.id]
+        );
+
+        res.json({
+            registered: result.rows.length > 0,
+            registered_at: result.rows[0]?.created_at ?? null,
+        });
+    } catch (err) {
+        next(err);
+    }
+});
 
 router.post('/me/face', authenticate, upload.array('selfies', MAX_SELFIES), async (req, res, next) => {
     try {
