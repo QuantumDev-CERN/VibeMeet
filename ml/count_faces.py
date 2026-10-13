@@ -1,16 +1,3 @@
-"""Count faces in a local photo using VibeMeet's ML detector.
-
-This is the exact detection step from the /process-photo pipeline
-(ml/face.py :: extract_faces — buffalo_l, det_size 640, min det_score 0.5),
-but with zero side effects: no DB writes, no API calls, no Docker.
-
-Usage:
-    cd ml
-    uv run python count_faces.py /path/to/photo.jpg
-
-Requires the GPU env (same one that runs your ml service). First run
-downloads the buffalo_l model (~300MB) to ~/.insightface.
-"""
 import sys
 
 import cv2
