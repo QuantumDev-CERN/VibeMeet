@@ -32,7 +32,7 @@ export async function indexUser(userId, buffers, mimetypes){
     return data; // { success: true, selfies_used: N }
 }
 
-export async function search(userId, threadId, threshold = 0.45) {
+export async function search(userId, threadId, threshold = 0.6) {
     const { data } = await mlclient.post('/search', {
         user_id: userId,
         thread_id: threadId,
