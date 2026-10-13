@@ -220,8 +220,15 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
                     indexed, face_count, uploaded_at
              FROM photos
              WHERE thread_id = $1
+             AND (
+                    uploaded_by = $2 
+                    OR  id IN (
+                        SELECT photo_id FROM photo_faces
+                        WHERE user_id = $2 AND confirmed IS NOT false
+                        )
+                )
              ORDER BY uploaded_at DESC`,
-            [threadId]
+            [threadId,userId]
         );
 
         const photos = await mapWithConcurrency(result.rows, SIGNED_URL_CONCURRENCY, async (photo) => {
@@ -262,7 +269,7 @@ router.get('/:photoId/download', authenticate, validateUUID('photoId'), async (r
         }
 
         const faceResult = await pool.query(
-            'SELECT photo_id FROM photo_faces WHERE photo_id = $1 AND user_id = $2',
+            'SELECT photo_id FROM photo_faces WHERE photo_id = $1 AND user_id = $2 AND confirmed IS NOT false',
             [photoId, userId]
         );
         if (faceResult.rows.length === 0) {
