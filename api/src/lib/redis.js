@@ -6,9 +6,12 @@ export const TTL = {
     SEARCH_RESULTS:  10 * 60,       // how long a search session lives
     SEARCH_ZIP:      30 * 60,       // extended when zip starts, outlives download
     RATE_LIMIT:      10 * 60,       // sliding window for search rate limit
+    OTP_PENDING:     30 * 60,       // pending registration + OTP lives 30 min
 };
 
 export const SEARCH_RATE_LIMIT = 5;
+export const OTP_RESEND_COOLDOWN = 60;
+export const OTP_MAX_ATTEMPTS = 5;
 
 const client = new Redis(process.env.REDIS_URL, {
     maxRetriesPerRequest: 3,
