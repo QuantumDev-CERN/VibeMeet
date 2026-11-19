@@ -128,11 +128,42 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
 
         const dedupedMatches = [...bestMatchPerPhoto.values()];
 
+        // Full photo rows for the matches, so Your Frames renders straight from
+        // the search answer instead of the thread's scoped photo list.
+        const photoResult = await pool.query(
+            `SELECT id, thread_id, uploaded_by, storage_key, storage_key_thumb,
+                    indexed, face_count, uploaded_at
+             FROM photos WHERE id = ANY($1::uuid[])`,
+            [dedupedMatches.map((m) => m.photo_id)]
+        );
+        const matchedPhotoRows = await mapWithConcurrency(photoResult.rows, 10, async (photo) => {
+            const [thumbnail_url, download_url] = await Promise.all([
+                getSignedPhotoUrl(photo.storage_key_thumb, 5 * 60), // thumbnails: 5 min
+                getSignedPhotoUrl(photo.storage_key, 60 * 60),      // downloads: 1 hour
+            ]);
+            return {
+                id: photo.id,
+                thread_id: photo.thread_id,
+                uploaded_by: photo.uploaded_by,
+                indexed: photo.indexed,
+                face_count: photo.face_count,
+                uploaded_at: photo.uploaded_at,
+                thumbnail_url,
+                download_url,
+            };
+        });
+        const photoById = Object.fromEntries(matchedPhotoRows.map((p) => [p.id, p]));
+        const enrichedMatches = dedupedMatches
+            .map((m) => ({ ...m, photo: photoById[m.photo_id] }))
+            .filter((m) => m.photo);
+        // Lean list for the download session — no signed URLs in Redis.
+        const leanMatches = enrichedMatches.map(({ photo, ...rest }) => rest);
+
         const searchKey = randomUUID();
         const redisPayload = JSON.stringify({
             user_id:   userId,
             thread_id,
-            matches:   dedupedMatches, // [{ photo_id, similarity, bbox }]
+            matches:   leanMatches, // [{ photo_id, similarity, bbox }]
         });
 
         await redis.set(
@@ -144,8 +175,8 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
 
         res.json({
             search_key: searchKey,
-            matches:    dedupedMatches,       // [{ photo_id, similarity, bbox }]
-            total:      dedupedMatches.length, // distinct photos, not raw face rows
+            matches:    enrichedMatches,       // [{ photo_id, similarity, bbox, photo }]
+            total:      enrichedMatches.length, // distinct photos, not raw face rows
             thread_id,
         });
 
@@ -159,69 +190,13 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
     }
 });
 
-router.post('/download', authenticate, validateUUID('photo_ids', { source: 'body', isArray: true }), async (req, res, next) => {
-    try {
-        if (!isRedisHealthy()) {
-            return res.status(503).json({ error: 'Download service temporarily unavailable' });
-        }
-
-        const { search_key, photo_ids } = req.body;
-        const userId = req.user.id;
-
-        if (!search_key) {
-            return res.status(400).json({ error: 'search_key is required' });
-        }
-
-        const raw = await redis.get(`search:${search_key}`);
-        if (!raw) {
-            return res.status(410).json({
-                error: 'Search session expired. Please run a new search',
-            });
-        }
-
-        const session = JSON.parse(raw);
-        if (session.user_id !== userId) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
-        const validPhotoIds = new Set(session.matches.map(m => m.photo_id));
-        const unauthorised = photo_ids.filter(id => !validPhotoIds.has(id));
-        if (unauthorised.length > 0) {
-            return res.status(403).json({
-                error: 'One or more photo_ids are not part of this search result',
-            });
-        }
-        const photoResult = await pool.query(
-            `SELECT id, storage_key
-             FROM photos
-             WHERE id = ANY($1::uuid[])
-             AND thread_id = $2`,
-            [photo_ids, session.thread_id]
-        );
-
-        const photoMap = Object.fromEntries(photoResult.rows.map(p => [p.id, p]));
-
-        const downloads = await mapWithConcurrency(photo_ids, 10, async (photoId) => {
-            const photo = photoMap[photoId];
-            if (!photo) return null; // photo deleted between search and download
-
-            const download_url = await getSignedPhotoUrl(photo.storage_key, 60 * 60); // 1 hour
-            return { photo_id: photoId, download_url };
-        });
-
-        res.json({ downloads: downloads.filter(Boolean) });
-
-    } catch (err) {
-        next(err);
-    }
-});
-
 router.post('/zip', authenticate, async (req, res, next) => {
     try {
         if (!isRedisHealthy()) {
-            return res.status(503).json({ error: 'Download service temporarily unavailable' });
+            return res.status(503).json({ error: 'Search service temporarily unavailable' });
         }
 
-        const { search_key } = req.body;
+        const { search_key, photo_ids } = req.body;
         const userId = req.user.id;
 
         if (!search_key) {
@@ -243,7 +218,21 @@ router.post('/zip', authenticate, async (req, res, next) => {
 
         await redis.expire(`search:${search_key}`, TTL.SEARCH_ZIP);
 
-        const uniquePhotoIds = [...new Set(session.matches.map(m => m.photo_id))];
+        // Optional subset: when photo_ids is a non-empty array, zip only
+        // those — each must be part of this search result. Otherwise zip
+        // the whole roll, as before.
+        const validPhotoIds = new Set(session.matches.map(m => m.photo_id));
+        const requestedIds = Array.isArray(photo_ids) && photo_ids.length > 0
+            ? [...new Set(photo_ids)]
+            : [...validPhotoIds];
+        const unauthorised = requestedIds.filter(id => !validPhotoIds.has(id));
+        if (unauthorised.length > 0) {
+            return res.status(403).json({
+                error: 'One or more photo_ids are not part of this search result',
+            });
+        }
+
+        const uniquePhotoIds = requestedIds;
 
         const photoResult = await pool.query(
             `SELECT id, storage_key, thread_id, uploaded_at
@@ -314,7 +303,6 @@ router.post('/zip', authenticate, async (req, res, next) => {
                 '==============',
                 `${skipped.length} photo(s) could not be included in this download.`,
                 'Use the recovery URLs below to download them individually.',
-                'Recovery URLs require authentication — open them in the app.',
                 '',
                 ...skippedLines,
             ].join('\n');
