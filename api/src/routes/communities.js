@@ -2,7 +2,6 @@ import { Router } from 'express';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
-import { deletePhoto } from '../lib/storage.js';
 import threadRoutes from './threads.js';
 
 const router = Router();
@@ -70,7 +69,7 @@ router.get('/', async (req, res, next) => {
     }
 });
 
-router.get('/:slug', async (req, res, next) => {
+router.get('/:slug', authenticate,async (req, res, next) => {
     try{
         const { slug } = req.params;
         const result = await pool.query(`
@@ -88,7 +87,14 @@ router.get('/:slug', async (req, res, next) => {
         if (result.rows.length === 0) {
             return res.status(404).json({error: 'Community not found'});
         }
-        res.json({ community: result.rows[0] });
+        const community = result.rows[0];
+        const member = await pool.query(
+            `SELECT role FROM community_members WHERE user_id = $1 AND community_id = $2`,
+            [req.user.id, community.id]
+        );
+        const is_member = member.rows.length > 0;
+        const role = is_member ? member.rows[0].role : null;
+        res.json({ community: { ...community, is_member, role } });
 
     } catch (err) {
         next(err);
@@ -122,44 +128,44 @@ router.post('/:id/join', authenticate, validateUUID('id'), async (req, res, next
     }
 });
 
-router.delete('/:id', authenticate, validateUUID('id'), async (req, res, next) => {
+router.post('/:id/leave', authenticate, validateUUID('id'), async (req, res, next) => {
     try {
         const { id } = req.params;
         const userId = req.user.id;
-
-        const communityResult = await pool.query(
-            `SELECT id, created_by FROM communities WHERE id = $1`,
-            [id]
+        const community = await pool.query(
+            `SELECT id FROM communities WHERE id = $1`,[id]
         );
-        if (communityResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Community not found' });
-        }
-        if (communityResult.rows[0].created_by !== userId) {
-            return res.status(403).json({ error: 'Only the community creator can delete this community' });
-        }
-        const photosResult = await pool.query(
-            `SELECT p.storage_key, p.storage_key_thumb
-             FROM photos p
-             JOIN threads t ON t.id = p.thread_id
-             WHERE t.community_id = $1`,
-            [id]
-        );
-        await pool.query(`DELETE FROM communities WHERE id = $1`, [id]);
-        const cleanup = photosResult.rows.flatMap((p) => [
-            deletePhoto(p.storage_key).catch((e) =>
-                console.error(`[R2] cleanup failed for key ${p.storage_key}: ${e.message}`)
-            ),
-            deletePhoto(p.storage_key_thumb).catch((e) =>
-                console.error(`[R2] cleanup failed for key ${p.storage_key_thumb}: ${e.message}`)
-            ),
-        ]);
-        await Promise.all(cleanup);
 
-        res.json({ message: 'Community deleted' });
-    } catch (err) {
+        if (community.rows.length === 0) return res.status(404).json({error: 'Community not found'});
+
+        const member = await pool.query(
+            `SELECT role FROM community_members WHERE user_id = $1 AND community_id = $2`,
+            [userId, id]
+        );
+
+        if (member.rows.length === 0) {
+            return res.status(400).json({ error: 'You are not a member of this community' });
+        }
+        if (member.rows[0].role === 'admin') {
+            return res.status(403).json({ error: 'The community creator cannot leave the community' });
+        }
+
+        const result = await pool.query(
+            `DELETE FROM community_members WHERE user_id = $1 AND community_id = $2 RETURNING user_id`,
+            [userId, id]
+        );
+
+        if (result.rows.length > 0) {
+            await pool.query(
+                `UPDATE communities SET member_count = member_count - 1 WHERE id = $1`, [id]);
+        }
+        res.json({message: 'Left successfully'});
+    } catch(err) {
         next(err);
     }
 });
+
+
 
 router.use('/:communityId/threads', threadRoutes);
 
