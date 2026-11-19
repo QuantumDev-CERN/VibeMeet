@@ -214,6 +214,12 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
         if (memberResult.rows.length === 0) {
             return res.status(403).json({ error: 'You are not a member of this community' });
         }
+        const countResult = await pool.query(
+        `SELECT COUNT(*) AS count FROM photos 
+        WHERE thread_id = $1 AND indexed = true`, //later optimize this query
+        [threadId]
+        );
+        const indexed_count = Number(countResult.rows[0].count);
 
         const result = await pool.query(
             `SELECT id, thread_id, uploaded_by, storage_key, storage_key_thumb,
@@ -249,7 +255,7 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
             };
         });
 
-        res.json({ photos });
+        res.json({ photos, indexed_count });
     } catch (err) {
         next(err);
     }
