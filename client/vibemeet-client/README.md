@@ -7,7 +7,6 @@ Next.js (App Router, JavaScript) frontend for the VibeMeet API in `../api`.
 ```bash
 npm install
 cp .env.local.example .env.local
-# edit .env.local if your API isn't on http://localhost:3001
 npm run dev
 ```
 
