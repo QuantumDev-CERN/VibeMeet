@@ -12,7 +12,7 @@ export async function processPhoto(photoID, threadID, imageUrl){
         thread_id: threadID,
         image_url: imageUrl,
     });
-    return data; // { success: true, face_found: N }
+    return data; 
 }
 
 export async function indexUser(userId, buffers, mimetypes){
@@ -27,9 +27,9 @@ export async function indexUser(userId, buffers, mimetypes){
     });
 
     const { data } = await mlclient.post('/index-user', form, {
-        headers: form.getHeaders(), //Sets correct Content-Type
+        headers: form.getHeaders(), 
     });
-    return data; // { success: true, selfies_used: N }
+    return data; 
 }
 
 export async function search(userId, threadId, threshold = 0.6) {
@@ -39,5 +39,5 @@ export async function search(userId, threadId, threshold = 0.6) {
         threshold,
     });
 
-    return data; // { matches: [{ photo_id, similarity, bbox }], total: N }
+    return data; 
 }
