@@ -1,10 +1,10 @@
-import numpy as np 
+import numpy as np
 import cv2
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List 
+from typing import List
 from models import ProcessPhotoRequest, SearchRequest, SearchResponse, FaceResult
 from face import extract_faces, build_user_embedding, download_img
 from search import store_face_embeddings, search_faces, upsert_user_embedding
@@ -26,7 +26,7 @@ def health():
 @app.post("/process-photo")
 def process_photo(req: ProcessPhotoRequest):
     try:
-        img = download_img(req.image_url)
+        img = download_img(req.storage_key)
         faces = extract_faces(img)
         store_face_embeddings(req.photo_id, req.thread_id, faces)
         return {"success": True, "face_found": len(faces)}
