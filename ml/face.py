@@ -15,7 +15,9 @@ _app = None
 _app_lock = threading.Lock()
 _s3 = None
 _s3_lock = threading.Lock()
-ALLOWED_MODULES = ['detection', 'landmark_2d_106', 'recognition']
+# Embeddings only need detection + recognition. Loading landmark_2d_106 as well
+# produced bit-identical embeddings in testing, so it is dropped to save time/RAM.
+ALLOWED_MODULES = ['detection', 'recognition']
 
 def _build_providers():
     if os.getenv('VIBEMEET_ML_DEVICE', 'cuda').lower() == 'cuda':
@@ -26,6 +28,17 @@ def _build_providers():
         return [('CUDAExecutionProvider', cuda_opts)], True
     return ['CPUExecutionProvider'], False
 
+def _session_kwargs():
+    # ORT sizes its thread pool from the HOST's cores, not the container's CPU quota.
+    # Set ORT_THREADS to the vCPU count you gave the container (unset = ORT default).
+    threads = os.getenv('ORT_THREADS')
+    if not threads:
+        return {}
+    so = onnxruntime.SessionOptions()
+    so.intra_op_num_threads = int(threads)
+    so.inter_op_num_threads = 1
+    return {'sess_options': so}
+
 def get_model():
     global _app
     if _app is None:
@@ -34,8 +47,10 @@ def get_model():
                 providers, use_cuda = _build_providers()
                 _app = FaceAnalysis(
                     name='buffalo_l',
+                    root=os.getenv('INSIGHTFACE_ROOT', '~/.insightface'),
                     providers=providers,
                     allowed_modules=ALLOWED_MODULES,
+                    **_session_kwargs(),
                 )
                 det_size = int(os.getenv('VIBEMEET_DET_SIZE', '640'))
                 _app.prepare(
