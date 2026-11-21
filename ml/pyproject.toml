@@ -16,7 +16,7 @@ dependencies = [
     "python-dotenv",
     "rq",                # job queue backed by redis
     "redis",
-    "requests",
+    "boto3",             # S3 reads from the private bucket
 ]
 
 [dependency-groups]
