@@ -7,8 +7,8 @@ from jobs import process_photo_job, MAX_RETRIES
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
 
-POLL_INTERVAL_SECONDS = 30      
-BATCH_SIZE = 20                 
+POLL_INTERVAL_SECONDS = 30
+BATCH_SIZE = 20
 QUEUE_NAME = "photo-processing"
 
 def get_queue():
@@ -20,7 +20,7 @@ def poll_and_enqueue():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, thread_id, url
+                SELECT id, thread_id, storage_key
                 FROM photos
                 WHERE indexed = false AND retry_count < %s
                 ORDER BY uploaded_at ASC
@@ -35,11 +35,11 @@ def poll_and_enqueue():
         return
     queue = get_queue()
     enqueued = 0
-    for photo_id, thread_id, url in rows:
+    for photo_id, thread_id, storage_key in rows:
         existing = queue.fetch_job(str(photo_id))
         if existing is not None and existing.get_status() in ("queued", "started", "deferred"):
             continue
-        queue.enqueue(process_photo_job, str(photo_id), str(thread_id), url, job_id=str(photo_id))
+        queue.enqueue(process_photo_job, str(photo_id), str(thread_id), storage_key, job_id=str(photo_id))
         enqueued += 1
     if enqueued:
         log.info(f"Enqueued {enqueued} stuck photo(s) for reprocessing")
