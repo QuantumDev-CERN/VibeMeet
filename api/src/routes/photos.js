@@ -5,7 +5,7 @@ import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
 import { uploadPhoto, deletePhoto, getSignedPhotoUrl } from '../lib/storage.js';
-import { processPhoto } from '../lib/ml.js';
+import { queueIndexing } from '../lib/indexing.js';
 
 const router = Router();
 
@@ -171,9 +171,7 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
         );
 
         const photo = finalResult.rows[0];
-        processPhoto(photo.id, thread_id, downloadResult.key).catch((err) => {
-            console.error(`[ML] processing failed for photo ${photo.id}: ${err.message}`);
-        });
+        queueIndexing(photo.id, thread_id, downloadResult.key);
         res.status(201).json({ photo });
 
     } catch (err) {
