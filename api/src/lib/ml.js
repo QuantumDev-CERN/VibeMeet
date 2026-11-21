@@ -6,13 +6,13 @@ const mlclient = axios.create({
     timeout: 30000,
 });
 
-export async function processPhoto(photoID, threadID, imageUrl){
+export async function processPhoto(photoID, threadID, storageKey){
     const { data } = await mlclient.post('/process-photo', {
         photo_id: photoID,
         thread_id: threadID,
-        image_url: imageUrl,
+        storage_key: storageKey,
     });
-    return data; 
+    return data; // { success: true, face_found: N }
 }
 
 export async function indexUser(userId, buffers, mimetypes){
@@ -27,9 +27,9 @@ export async function indexUser(userId, buffers, mimetypes){
     });
 
     const { data } = await mlclient.post('/index-user', form, {
-        headers: form.getHeaders(), 
+        headers: form.getHeaders(), //Sets correct Content-Type
     });
-    return data; 
+    return data; // { success: true, selfies_used: N }
 }
 
 export async function search(userId, threadId, threshold = 0.6) {
@@ -39,5 +39,5 @@ export async function search(userId, threadId, threshold = 0.6) {
         threshold,
     });
 
-    return data; 
+    return data; // { matches: [{ photo_id, similarity, bbox }], total: N }
 }
