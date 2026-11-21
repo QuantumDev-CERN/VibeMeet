@@ -73,6 +73,7 @@ async function mapWithConcurrency(items, limit, asyncFn) {
     let index = 0;
 
     async function runWorker() {
+
         while (index < items.length) {
             const current = index++;
             results[current] = await asyncFn(items[current], current);
@@ -170,7 +171,7 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
         );
 
         const photo = finalResult.rows[0];
-        processPhoto(photo.id, thread_id, downloadResult.url).catch((err) => {
+        processPhoto(photo.id, thread_id, downloadResult.key).catch((err) => {
             console.error(`[ML] processing failed for photo ${photo.id}: ${err.message}`);
         });
         res.status(201).json({ photo });
@@ -215,7 +216,7 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
             return res.status(403).json({ error: 'You are not a member of this community' });
         }
         const countResult = await pool.query(
-        `SELECT COUNT(*) AS count FROM photos 
+        `SELECT COUNT(*) AS count FROM photos
         WHERE thread_id = $1 AND indexed = true`, //later optimize this query
         [threadId]
         );
@@ -227,7 +228,7 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
              FROM photos
              WHERE thread_id = $1
              AND (
-                    uploaded_by = $2 
+                    uploaded_by = $2
                     OR  id IN (
                         SELECT photo_id FROM photo_faces
                         WHERE user_id = $2 AND confirmed IS NOT false
