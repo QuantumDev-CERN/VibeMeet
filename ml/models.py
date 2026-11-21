@@ -3,7 +3,7 @@ from typing import Optional
 class ProcessPhotoRequest(BaseModel):
     photo_id:str
     thread_id:str
-    image_url:str 
+    storage_key:str
 class SearchRequest(BaseModel):
     user_id:str
     thread_id:str
