@@ -2,9 +2,10 @@ import insightface
 from insightface.app import FaceAnalysis
 import numpy as np
 import cv2
-import requests
 import os
 import threading
+import boto3
+from botocore.config import Config
 import onnxruntime
 
 # (onnxruntime-gpu[cuda,cudnn]). Harmless on CPU-only installs.
@@ -12,6 +13,8 @@ onnxruntime.preload_dlls()
 
 _app = None
 _app_lock = threading.Lock()
+_s3 = None
+_s3_lock = threading.Lock()
 ALLOWED_MODULES = ['detection', 'landmark_2d_106', 'recognition']
 
 def _build_providers():
@@ -42,14 +45,37 @@ def get_model():
     return _app
 
 
-def download_img(url: str) -> np.ndarray:
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    img_array = np.frombuffer(response.content, np.uint8)
+def _get_s3_client():
+    global _s3
+    if _s3 is None:
+        with _s3_lock:
+            if _s3 is None:
+                endpoint = os.getenv('S3_ENDPOINT')
+                if not endpoint:
+                    raise ValueError("S3_ENDPOINT is not set")
+                force_path_style = os.getenv('S3_FORCE_PATH_STYLE', 'true').lower() != 'false'
+                _s3 = boto3.client(
+                    's3',
+                    endpoint_url=endpoint,
+                    region_name=os.getenv('S3_REGION', 'us-east-005'),
+                    aws_access_key_id=os.getenv('S3_ACCESS_KEY_ID'),
+                    aws_secret_access_key=os.getenv('S3_SECRET_ACCESS_KEY'),
+                    config=Config(s3={'addressing_style': 'path' if force_path_style else 'auto'}),
+                )
+    return _s3
+
+
+def download_img(storage_key: str) -> np.ndarray:
+    bucket = os.getenv('S3_BUCKET')
+    if not bucket:
+        raise ValueError("S3_BUCKET is not set")
+    response = _get_s3_client().get_object(Bucket=bucket, Key=storage_key)
+    data = response['Body'].read()
+    img_array = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if img is None:
-        raise ValueError(f"Could not decode image from {url}")
+        raise ValueError(f"Could not decode image from {storage_key}")
     return img
 
 
