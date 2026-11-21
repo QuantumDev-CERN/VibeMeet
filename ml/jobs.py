@@ -23,10 +23,10 @@ def _record_failure():
         )
     return count
 
-def process_photo_job(photo_id: str, thread_id: str, image_url: str):
+def process_photo_job(photo_id: str, thread_id: str, storage_key: str):
     conn = get_connection()
     try:
-        img = download_img(image_url)
+        img = download_img(storage_key)
         faces = extract_faces(img)
         store_face_embeddings(photo_id, thread_id, faces)
         with conn.cursor() as cur:
@@ -49,7 +49,7 @@ def process_photo_job(photo_id: str, thread_id: str, image_url: str):
                     SET retry_count = retry_count + 1,
                         last_error = %s,
                         last_attempted_at = %s
-                    WHERE id = %s
+                    WHERE id = $s
                     RETURNING retry_count
                     """,
                     (str(e)[:2000], datetime.now(), photo_id)
