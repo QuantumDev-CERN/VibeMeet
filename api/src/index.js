@@ -10,6 +10,7 @@ import threadRoutes from './routes/threads.js';
 import photoRoutes from './routes/photos.js';
 import searchRoutes from './routes/search.js';
 import { isStorageHealthy } from './lib/storage.js';
+import { sweepStuckPhotos } from './lib/indexing.js';
 
 dotenv.config();
 
@@ -59,4 +60,6 @@ app.listen(PORT, async () => {
         console.warn(`Storage UNHEALTHY — uploads will fail: ${storage.error}`);
         console.warn('See docs/STORAGE.md for Backblaze B2 / MinIO setup.');
     }
+
+    sweepStuckPhotos().catch((err) => console.error(`[ML] startup sweep failed: ${err.message}`));
 });
