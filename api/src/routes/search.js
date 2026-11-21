@@ -4,7 +4,7 @@ import archiver from 'archiver';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
-import { search as mlSearch } from '../lib/ml.js';
+import { searchFaces } from '../lib/faceSearch.js';
 import { getSignedPhotoUrl, getObjectStream } from '../lib/storage.js';
 import redis, { isRedisHealthy, TTL, SEARCH_RATE_LIMIT } from '../lib/redis.js';
 
@@ -82,9 +82,9 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
             });
         }
 
-        const mlResult = await mlSearch(userId, thread_id, threshold);
+        const faceMatches = await searchFaces(userId, thread_id, threshold);
 
-        if (mlResult.total === 0) {
+        if (faceMatches.length === 0) {
             return res.json({
                 search_key: null,
                 matches: [],
@@ -94,7 +94,7 @@ router.post('/', authenticate, validateUUID('thread_id', { source: 'body' }), as
         }
 
         const bestMatchPerPhoto = new Map();
-        for (const m of mlResult.matches) {
+        for (const m of faceMatches) {
             const existing = bestMatchPerPhoto.get(m.photo_id);
             if (!existing || m.similarity > existing.similarity) {
                 bestMatchPerPhoto.set(m.photo_id, m);
