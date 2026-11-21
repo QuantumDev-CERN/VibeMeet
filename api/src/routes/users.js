@@ -3,7 +3,7 @@ import multer from 'multer';
 import pool from '../db.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateUUID } from '../middleware/validate.js';
-import { indexUser } from '../lib/ml.js';
+import { indexUser, warmUp } from '../lib/ml.js';
 import { getSignedPhotoUrl } from '../lib/storage.js';
 
 const router = Router();
@@ -76,6 +76,9 @@ router.get('/me/face', authenticate, async (req, res, next) => {
              WHERE user_id = $1 AND active = true`,
             [req.user.id]
         );
+
+        // Not registered yet means selfies are coming: start the ML container now.
+        if (result.rows.length === 0) warmUp();
 
         res.json({
             registered: result.rows.length > 0,
