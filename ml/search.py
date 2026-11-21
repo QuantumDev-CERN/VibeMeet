@@ -22,6 +22,8 @@ def store_face_embeddings(photo_id: str, thread_id: str, faces: list):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Idempotent: the API retries on timeout, so a photo can arrive twice.
+            cur.execute("DELETE FROM face_embeddings WHERE photo_id = %s", (photo_id,))
             psycopg2.extras.execute_values(
                 cur,
                 """
