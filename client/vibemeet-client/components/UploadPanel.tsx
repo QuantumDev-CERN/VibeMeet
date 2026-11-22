@@ -23,16 +23,31 @@ export default function UploadPanel({ token, threadId, onUploaded }: UploadPanel
     setStatus('uploading');
     setProgress({ done: 0, total: files.length });
 
-    for (let i = 0; i < files.length; i++) {
-      try {
-        await api.uploadPhoto(token, threadId, files[i]);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
-        setError((prev) => (prev ? `${prev} ` : '') + `${files[i].name}: ${message}`);
+    const CONCURRENCY = 3;
+    let next = 0;
+    let done = 0;
+    const errors: string[] = [];
+
+    async function worker() {
+      while (next < files.length) {
+        const i = next++;
+        const file = files[i];
+        try {
+          await api.uploadPhoto(token, threadId, file);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Upload failed';
+          errors.push(`${file.name}: ${message}`);
+        }
+        done += 1;
+        setProgress({ done, total: files.length });
       }
-      setProgress({ done: i + 1, total: files.length });
     }
 
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, files.length) }, () => worker())
+    );
+
+    if (errors.length > 0) setError(errors.join(' '));
     setStatus('done');
     onUploaded();
     window.setTimeout(() => setStatus('idle'), 4000);
