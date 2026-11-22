@@ -193,7 +193,7 @@ router.post('/', authenticate, upload.single('file'), async (req, res, next) => 
 
 router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (req, res, next) => {
     try {
-        const { threadId } = req.params;
+        const threadId = req.params.threadId;
         const userId = req.user.id;
 
         const threadResult = await pool.query(
@@ -219,6 +219,12 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
         [threadId]
         );
         const indexed_count = Number(countResult.rows[0].count);
+        const totalResult = await pool.query(
+        `SELECT COUNT(*) AS count FROM photos
+        WHERE thread_id = $1`,
+        [threadId]
+        );
+        const total_count = Number(totalResult.rows[0].count);
 
         const result = await pool.query(
             `SELECT id, thread_id, uploaded_by, storage_key, storage_key_thumb,
@@ -254,7 +260,7 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
             };
         });
 
-        res.json({ photos, indexed_count });
+        res.json({ photos, indexed_count, total_count });
     } catch (err) {
         next(err);
     }
@@ -262,7 +268,7 @@ router.get('/thread/:threadId', authenticate, validateUUID('threadId'), async (r
 
 router.get('/:photoId/download', authenticate, validateUUID('photoId'), async (req, res, next) => {
     try {
-        const { photoId } = req.params;
+        const photoId = req.params.photoId;
         const userId = req.user.id;
 
         const photoResult = await pool.query(
