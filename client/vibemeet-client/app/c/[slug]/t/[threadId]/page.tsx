@@ -29,6 +29,7 @@ export default function ThreadPage() {
   const [communityName, setCommunityName] = useState<string | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [indexedCount, setIndexedCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [page, setPage] = useState(1);
@@ -42,9 +43,10 @@ export default function ThreadPage() {
 
   const loadPhotos = useCallback(async () => {
   if (!token) return;
-  const { photos, indexed_count } = await api.listThreadPhotos(token, threadId);
+  const { photos, indexed_count, total_count } = await api.listThreadPhotos(token, threadId);
   setPhotos(photos);
   setIndexedCount(indexed_count);
+  setTotalCount(total_count);
   }, [token, threadId]);
 
   useEffect(() => {
@@ -67,10 +69,11 @@ export default function ThreadPage() {
         setThread(thread);
         if (token) {
           try {
-            const { photos, indexed_count } = await api.listThreadPhotos(token, threadId);
+            const { photos, indexed_count, total_count } = await api.listThreadPhotos(token, threadId);
             if (!cancelled) {
               setPhotos(photos);
               setIndexedCount(indexed_count);
+              setTotalCount(total_count);
             }
           } catch (err) {
             if (!cancelled)
@@ -258,7 +261,7 @@ export default function ThreadPage() {
               {token && (
                 <div className="meta-item--inline">
                   <span className="meta-item__label">Photographs</span>
-                  <span className="meta-item__value">{photos.length}</span>
+                  <span className="meta-item__value">{totalCount}</span>
                 </div>
               )}
             </div>
