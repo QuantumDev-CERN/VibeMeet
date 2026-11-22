@@ -45,8 +45,8 @@ export default function CommunityPage() {
           const entries = await Promise.all(
             threads.map(async (t) => {
               try {
-                const { photos } = await api.listThreadPhotos(token, t.id);
-                return [t.id, photos.length] as const;
+                const { total_count } = await api.listThreadPhotos(token, t.id);
+                return [t.id, total_count] as const;
               } catch {
                 return [t.id, null] as const;
               }
