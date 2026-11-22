@@ -279,7 +279,7 @@ export function createThread(
 export function listThreadPhotos(
   token: string,
   threadId: string
-): Promise<{ photos: Photo[]; indexed_count: number }> {
+): Promise<{ photos: Photo[]; indexed_count: number; total_count: number }> {
   return request(`/api/photos/thread/${threadId}`, { token });
 }
 
