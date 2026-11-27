@@ -3,14 +3,3 @@ __pycache__
 *.pyc
 .env
 .git
-
-
-
-az containerapp create -n vibemeet-ml -g vibemeet-rg --environment vibemeet-env \
-  --image ghcr.io/quantumdev-cern/vibemeet-ml:latest \
-  --target-port 8000 --ingress external \
-  --cpu 1.0 --memory 2.0Gi --min-replicas 0 --max-replicas 1 \
-  --secrets ml-key="8e739d52a7dbf61a7d4a75169be4b4324499732b9fc309b6a4f6e07d1d48e723" db-url='<Neon DATABASE_URL>' s3-id='<B2 key id>' s3-secret='<B2 app key>' \
-  --env-vars ML_API_KEY=secretref:ml-key DATABASE_URL=secretref:db-url \
-             S3_ACCESS_KEY_ID=secretref:s3-id S3_SECRET_ACCESS_KEY=secretref:s3-secret \
-             S3_ENDPOINT="https://s3.us-east-005.backblazeb2.com" S3_REGION="us-east-005" S3_BUCKET="VibeMeet"
